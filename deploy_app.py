@@ -82,6 +82,70 @@ st.set_page_config(
 # Database setup
 DB_NAME = "leadai_pro.db"
 
+# --- Ensure database schema exists (idempotent) ---
+def _ensure_db_schema():
+    """Create required tables if they don't exist. Safe to call multiple times."""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        # Leads table (basic schema used by legacy UI)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS leads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                email TEXT,
+                company TEXT,
+                phone TEXT,
+                title TEXT,
+                industry TEXT,
+                category TEXT DEFAULT 'General',
+                user_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        # Campaigns table (minimal fields required by UI)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS campaigns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                subject TEXT,
+                content TEXT,
+                user_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        # Email tracking table used by analytics
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_tracking (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id INTEGER,
+                recipient TEXT,
+                status TEXT,
+                sent_at TIMESTAMP,
+                opened_at TIMESTAMP,
+                clicked_at TIMESTAMP,
+                clicked_link TEXT
+            )
+            """
+        )
+
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 # Per-user SMTP config storage
 CONFIG_DIR = ".user_configs"
 
@@ -921,40 +985,75 @@ def create_campaign(user_id: int, campaign_data: Dict) -> bool:
 
 def get_analytics(user_id: int) -> Dict:
     """Get analytics data for user"""
-    conn = sqlite3.connect(DB_NAME)
-    
-    # Get lead count
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM leads WHERE user_id = ?", (user_id,))
-    lead_count = cursor.fetchone()[0]
-            
-    # Get campaign count
-    cursor.execute("SELECT COUNT(*) FROM campaigns WHERE user_id = ?", (user_id,))
-    campaign_count = cursor.fetchone()[0]
-    
-    # Get email tracking data
-    cursor.execute('''
-        SELECT 
-            COUNT(*) as total_emails,
-            SUM(CASE WHEN status = 'Sent' THEN 1 ELSE 0 END) as sent_emails,
-            SUM(CASE WHEN opened_at IS NOT NULL THEN 1 ELSE 0 END) as opened_emails,
-            SUM(CASE WHEN clicked_at IS NOT NULL THEN 1 ELSE 0 END) as clicked_emails
-        FROM email_tracking et
-        JOIN campaigns c ON et.campaign_id = c.id
-        WHERE c.user_id = ?
-    ''', (user_id,))
-    
-    tracking_data = cursor.fetchone()
-    conn.close()
-            
-    return {
-        'lead_count': lead_count,
-        'campaign_count': campaign_count,
-        'total_emails': tracking_data[0] or 0,
-        'sent_emails': tracking_data[1] or 0,
-        'opened_emails': tracking_data[2] or 0,
-        'clicked_emails': tracking_data[3] or 0
-    }
+    # Ensure DB schema exists so analytics queries don't fail on fresh deploys
+    _ensure_db_schema()
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        # Lead count
+        try:
+            cursor.execute("SELECT COUNT(*) FROM leads WHERE user_id = ?", (user_id,))
+            lead_count = cursor.fetchone()[0] or 0
+        except sqlite3.OperationalError:
+            lead_count = 0
+
+        # Campaign count
+        try:
+            cursor.execute("SELECT COUNT(*) FROM campaigns WHERE user_id = ?", (user_id,))
+            campaign_count = cursor.fetchone()[0] or 0
+        except sqlite3.OperationalError:
+            campaign_count = 0
+
+        # Email tracking aggregates
+        total_emails = sent_emails = opened_emails = clicked_emails = 0
+        try:
+            cursor.execute(
+                '''
+                SELECT 
+                    COUNT(*) as total_emails,
+                    SUM(CASE WHEN status = 'Sent' THEN 1 ELSE 0 END) as sent_emails,
+                    SUM(CASE WHEN opened_at IS NOT NULL THEN 1 ELSE 0 END) as opened_emails,
+                    SUM(CASE WHEN clicked_at IS NOT NULL THEN 1 ELSE 0 END) as clicked_emails
+                FROM email_tracking et
+                JOIN campaigns c ON et.campaign_id = c.id
+                WHERE c.user_id = ?
+                ''',
+                (user_id,)
+            )
+            row = cursor.fetchone()
+            if row:
+                total_emails = row[0] or 0
+                sent_emails = row[1] or 0
+                opened_emails = row[2] or 0
+                clicked_emails = row[3] or 0
+        except sqlite3.OperationalError:
+            pass
+
+        return {
+            'lead_count': lead_count,
+            'campaign_count': campaign_count,
+            'total_emails': total_emails,
+            'sent_emails': sent_emails,
+            'opened_emails': opened_emails,
+            'clicked_emails': clicked_emails,
+        }
+    except Exception:
+        # Fail-safe default metrics
+        return {
+            'lead_count': 0,
+            'campaign_count': 0,
+            'total_emails': 0,
+            'sent_emails': 0,
+            'opened_emails': 0,
+            'clicked_emails': 0,
+        }
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 # Email functions
 def send_email_simulation(to_email: str, subject: str, content: str, profile_id: Optional[str] = None, attachments: Optional[List[Dict]] = None, auth_override: Optional[Dict] = None, custom_headers: Optional[Dict[str, str]] = None, utm_params: Optional[Dict[str, str]] = None) -> bool:
