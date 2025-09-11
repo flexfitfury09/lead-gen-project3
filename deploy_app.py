@@ -30,8 +30,10 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import requests
+
+# Optional transformers import (commented out in requirements.txt)
 try:
-from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+    from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
     TRANSFORMERS_AVAILABLE = False
