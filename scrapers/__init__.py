@@ -8,11 +8,13 @@ from .google_maps_scraper import GoogleMapsScraper
 from .yelp_scraper import YelpScraper
 from .yellowpages_scraper import YellowPagesScraper
 from .linkedin_scraper import LinkedInScraper
+from .test_scraper import TestScraper
 
 __all__ = [
     'BaseScraper',
     'GoogleMapsScraper', 
     'YelpScraper',
     'YellowPagesScraper',
-    'LinkedInScraper'
+    'LinkedInScraper',
+    'TestScraper'
 ]
