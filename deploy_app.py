@@ -1572,9 +1572,18 @@ def show_lead_generation():
     
     # Initialize orchestrator
     if 'lead_orchestrator' not in st.session_state:
-        st.session_state.lead_orchestrator = LeadGenerationOrchestrator()
+        try:
+            st.session_state.lead_orchestrator = LeadGenerationOrchestrator()
+        except Exception as e:
+            st.error(f"Failed to initialize lead generation system: {e}")
+            st.stop()
     
     orchestrator = st.session_state.lead_orchestrator
+    
+    # Check if database is available
+    if not orchestrator.db:
+        st.warning("⚠️ Lead generation database is not available. Some features may be limited.")
+        st.info("You can still use the scrapers, but leads won't be saved to the database.")
     
     # Lead Generation Form
     st.markdown("### 📝 Search Criteria")

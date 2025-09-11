@@ -20,7 +20,11 @@ class LeadGenerationOrchestrator:
     """Orchestrates lead generation from multiple sources"""
     
     def __init__(self, db_path: str = "leadai_pro.db"):
-        self.db = LeadDatabase(db_path)
+        try:
+            self.db = LeadDatabase(db_path)
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
+            self.db = None
         self.scrapers = {
             'google_maps': GoogleMapsScraper(),
             'yelp': YelpScraper(),
@@ -105,9 +109,14 @@ class LeadGenerationOrchestrator:
             deduplicated_leads = self._deduplicate_leads(all_leads)
             
             # Store in database
-            total_processed, duplicates_found, successfully_inserted = self.db.insert_leads(
-                [lead.to_dict() for lead in deduplicated_leads]
-            )
+            if self.db:
+                total_processed, duplicates_found, successfully_inserted = self.db.insert_leads(
+                    [lead.to_dict() for lead in deduplicated_leads]
+                )
+            else:
+                total_processed = len(deduplicated_leads)
+                duplicates_found = 0
+                successfully_inserted = 0
             
             # Prepare final results
             final_results = {
@@ -246,15 +255,21 @@ class LeadGenerationOrchestrator:
     
     def get_lead_stats(self) -> Dict:
         """Get lead statistics from database"""
-        return self.db.get_lead_stats()
+        if self.db:
+            return self.db.get_lead_stats()
+        return {}
     
     def export_leads(self, filters: Optional[Dict] = None, filename: Optional[str] = None) -> str:
         """Export leads to CSV"""
-        return self.db.export_to_csv(filters, filename)
+        if self.db:
+            return self.db.export_to_csv(filters, filename)
+        raise Exception("Database not available for export")
     
     def cleanup_duplicates(self) -> Tuple[int, int]:
         """Clean up existing duplicates in database"""
-        return self.db.cleanup_duplicates()
+        if self.db:
+            return self.db.cleanup_duplicates()
+        return 0, 0
     
     def stop_generation(self):
         """Stop lead generation process"""

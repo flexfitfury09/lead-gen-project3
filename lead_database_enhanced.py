@@ -62,20 +62,16 @@ class LeadDatabase:
                         name_hash TEXT,
                         address_hash TEXT,
                         email_hash TEXT,
-                        phone_hash TEXT,
-                        UNIQUE(name_hash, address_hash),
-                        UNIQUE(email_hash, phone_hash)
+                        phone_hash TEXT
                     )
                 """)
                 
-                # Create indexes for better performance
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_name_hash ON leads(name_hash)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_address_hash ON leads(address_hash)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_email_hash ON leads(email_hash)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_phone_hash ON leads(phone_hash)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_source ON leads(source)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_city_country ON leads(city, country)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_niche ON leads(niche)")
+                # Add unique constraints after table creation
+                try:
+                    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_name_address ON leads(name_hash, address_hash)")
+                    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_email_phone ON leads(email_hash, phone_hash)")
+                except sqlite3.OperationalError as e:
+                    logger.warning(f"Could not create unique constraints: {e}")
                 
                 # Create deduplication log table
                 cursor.execute("""
@@ -91,6 +87,21 @@ class LeadDatabase:
                 """)
                 
                 conn.commit()
+                
+                # Create indexes for better performance (after table creation)
+                try:
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_name_hash ON leads(name_hash)")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_address_hash ON leads(address_hash)")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_email_hash ON leads(email_hash)")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_phone_hash ON leads(phone_hash)")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_source ON leads(source)")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_city_country ON leads(city, country)")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_niche ON leads(niche)")
+                    conn.commit()
+                except sqlite3.OperationalError as e:
+                    # If indexes fail, continue without them
+                    logger.warning(f"Could not create some indexes: {e}")
+                
                 logger.info("Database initialized successfully")
                 
         except Exception as e:
