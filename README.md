@@ -5,7 +5,7 @@ colorFrom: indigo
 colorTo: purple
 sdk: streamlit
 app_file: deploy_app.py
-python_version: 3.10
+
 ---
 # 🚀 LeadAI Pro - AI-Powered Lead Management & Email Marketing Platform
 
@@ -275,5 +275,6 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 For support, please open an issue on the GitHub repository or contact the development team.
 
 ---
+
 
 **LeadAI Pro** - Empowering businesses with AI-driven lead management and email marketing solutions. 🚀
