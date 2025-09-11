@@ -1609,7 +1609,7 @@ def show_lead_generation():
     
     with col1:
         st.markdown("**Free Sources:**")
-        free_sources = ['google_maps', 'yelp', 'yellowpages', 'linkedin']
+        free_sources = ['test', 'google_maps', 'yelp', 'yellowpages', 'linkedin']
         selected_free = []
         for source in free_sources:
             if source in available_sources:

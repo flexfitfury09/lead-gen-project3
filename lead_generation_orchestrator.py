@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 from tqdm import tqdm
 
-from scrapers import GoogleMapsScraper, YelpScraper, YellowPagesScraper, LinkedInScraper
+from scrapers import GoogleMapsScraper, YelpScraper, YellowPagesScraper, LinkedInScraper, TestScraper
 from lead_database_enhanced import LeadDatabase
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,8 @@ class LeadGenerationOrchestrator:
             'google_maps': GoogleMapsScraper(),
             'yelp': YelpScraper(),
             'yellowpages': YellowPagesScraper(),
-            'linkedin': LinkedInScraper()
+            'linkedin': LinkedInScraper(),
+            'test': TestScraper()
         }
         self.results = {}
         self.progress = {}
@@ -250,6 +251,12 @@ class LeadGenerationOrchestrator:
                 'description': 'Company pages from LinkedIn (via Bing search)',
                 'rate_limit': '2.5s',
                 'reliability': 'Medium'
+            },
+            'test': {
+                'name': 'Test Scraper',
+                'description': 'Mock data for testing (always works)',
+                'rate_limit': '0.1s',
+                'reliability': 'High'
             }
         }
     
