@@ -4,8 +4,8 @@ emoji: 🚀
 colorFrom: indigo
 colorTo: purple
 sdk: streamlit
-app_file: deploy_app_local.py
-
+app_file: deploy_app.py
+python_version: 3.10
 ---
 # 🚀 LeadAI Pro - AI-Powered Lead Management & Email Marketing Platform
 
@@ -20,6 +20,17 @@ LeadAI Pro is a comprehensive AI-powered platform for lead management and email 
 - **⏰ Scheduled Email Campaigns** - Schedule emails for optimal delivery times
 - **👥 Lead Management & Scoring** - Organize and score leads with categories
 - **🎯 Role-Based Access Control** - Admin and User roles with different permissions
+
+### 🆕 What's New (v2.0)
+- **📧 Multi-Profile Email System** - Configure multiple SMTP profiles with OAuth2 support
+- **⚡ Real-time Counters** - Live metrics updates using WebSocket technology
+- **📎 Email Attachments** - Send files with your email campaigns
+- **🚫 Suppression Lists** - Manage blocked email addresses and domains
+- **🔄 Retry & Recovery** - Automatic retry with exponential backoff for failed sends
+- **📊 Advanced Campaign Controls** - Dry-run mode, send windows, rate limiting, and warmup
+- **🎯 Smart Targeting** - Preview recipients, deduplication, and safety thresholds
+- **📈 UTM Tracking** - Automatic UTM parameter injection for link tracking
+- **⚙️ Custom Headers** - Add custom email headers for advanced deliverability
 
 ### 🔧 Technical Features
 - **User Authentication** - Secure login/signup with hashed passwords
@@ -85,6 +96,10 @@ LeadAI Pro/
 - **Targeting**: Select leads by category or send to all
 - **Scheduling**: Send immediately or schedule for later
 - **Tracking**: Monitor delivery, opens, and clicks
+- **Multi-Profile Support**: Choose from multiple configured email profiles
+- **Advanced Controls**: Rate limiting, send windows, dry-run mode, and warmup
+- **Attachments**: Upload and send files with your campaigns
+- **Preview & Safety**: Preview recipients before sending with safety thresholds
 
 ### 4. AI Assistant
 - **Email Generation**: Generate personalized emails for specific leads
@@ -97,6 +112,8 @@ LeadAI Pro/
 - **Visual Charts**: Interactive charts for lead distribution and email performance
 - **Campaign History**: Track all campaigns and their results
 - **Export Reports**: Download campaign logs and analytics
+- **Live Counters**: WebSocket-powered real-time updates on every page
+- **Advanced Tracking**: UTM parameters, custom headers, and detailed engagement metrics
 
 ## 🔧 Configuration
 
@@ -106,6 +123,8 @@ The app works out of the box with default settings. For production use, you can 
 - **SMTP Settings**: For actual email sending (currently simulated)
 - **Database**: SQLite database (automatically created)
 - **AI Models**: Free Hugging Face models (automatically loaded)
+- **WebSocket URL**: For real-time metrics (default: ws://localhost:8000/ws/metrics)
+- **Multiple Email Profiles**: Configure via UI - no environment variables needed
 
 ### Database Schema
 - **Users**: Authentication and role management
@@ -232,13 +251,16 @@ The app works out of the box with default settings. For production use, you can 
 - **Integration APIs** - Connect with external services
 - **Mobile App** - Native mobile application
 - **Advanced Analytics** - More detailed reporting
+- **Email Automation** - Drip campaigns and follow-up sequences
+- **Advanced Segmentation** - Dynamic lead segmentation rules
 
 ### Technical Improvements
-- **Real Email Sending** - SMTP integration for actual email delivery
+- **Real Email Sending** - ✅ SMTP integration for actual email delivery (v2.0)
 - **Advanced Security** - Enhanced security features
 - **Performance Optimization** - Further performance improvements
 - **Database Migration** - Support for different databases
 - **API Development** - REST API for external integrations
+- **Real-time Updates** - ✅ WebSocket-powered live metrics (v2.0)
 
 ## 📄 License
 
@@ -254,6 +276,4 @@ For support, please open an issue on the GitHub repository or contact the develo
 
 ---
 
-
 **LeadAI Pro** - Empowering businesses with AI-driven lead management and email marketing solutions. 🚀
-
