@@ -31,7 +31,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import requests
 try:
-    from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
     TRANSFORMERS_AVAILABLE = False
@@ -51,14 +51,23 @@ import schedule
 import yagmail
 from email_validator import validate_email, EmailNotValidError
 
-# Lead Generation imports
+# Lead Generation imports (with error reporting)
+import sys
+import os
 try:
+    # Ensure current directory is on sys.path
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    if current_dir not in sys.path:
+        sys.path.append(current_dir)
+    
     from lead_generation_orchestrator import LeadGenerationOrchestrator
     from lead_database_enhanced import LeadDatabase
     LEAD_GENERATION_AVAILABLE = True
-except ImportError:
+except Exception as e:
     LEAD_GENERATION_AVAILABLE = False
-    st.warning("Lead generation features not available. Please ensure all dependencies are installed.")
+    st.error(f"Lead generation unavailable: {e}")
+    st.error(f"Current directory: {current_dir}")
+    st.error(f"Python path: {sys.path[:3]}...")
 try:
     from streamlit_autorefresh import st_autorefresh  # optional dependency for real-time updates
 except Exception:
@@ -958,7 +967,7 @@ def get_campaigns(user_id: int) -> pd.DataFrame:
     conn = sqlite3.connect(DB_NAME)
     query = "SELECT * FROM campaigns WHERE user_id = ? ORDER BY created_at DESC"
     df = pd.read_sql_query(query, conn, params=(user_id,))
-    conn.close()
+        conn.close()
     return df
 
 def create_campaign(user_id: int, campaign_data: Dict) -> bool:
@@ -987,21 +996,21 @@ def get_analytics(user_id: int) -> Dict:
     """Get analytics data for user"""
     # Ensure DB schema exists so analytics queries don't fail on fresh deploys
     _ensure_db_schema()
-
+    
     try:
         conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
+            cursor = conn.cursor()
 
         # Lead count
         try:
-            cursor.execute("SELECT COUNT(*) FROM leads WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT COUNT(*) FROM leads WHERE user_id = ?", (user_id,))
             lead_count = cursor.fetchone()[0] or 0
         except sqlite3.OperationalError:
             lead_count = 0
-
+            
         # Campaign count
         try:
-            cursor.execute("SELECT COUNT(*) FROM campaigns WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT COUNT(*) FROM campaigns WHERE user_id = ?", (user_id,))
             campaign_count = cursor.fetchone()[0] or 0
         except sqlite3.OperationalError:
             campaign_count = 0
@@ -1011,14 +1020,14 @@ def get_analytics(user_id: int) -> Dict:
         try:
             cursor.execute(
                 '''
-                SELECT 
-                    COUNT(*) as total_emails,
-                    SUM(CASE WHEN status = 'Sent' THEN 1 ELSE 0 END) as sent_emails,
-                    SUM(CASE WHEN opened_at IS NOT NULL THEN 1 ELSE 0 END) as opened_emails,
-                    SUM(CASE WHEN clicked_at IS NOT NULL THEN 1 ELSE 0 END) as clicked_emails
-                FROM email_tracking et
-                JOIN campaigns c ON et.campaign_id = c.id
-                WHERE c.user_id = ?
+        SELECT 
+            COUNT(*) as total_emails,
+            SUM(CASE WHEN status = 'Sent' THEN 1 ELSE 0 END) as sent_emails,
+            SUM(CASE WHEN opened_at IS NOT NULL THEN 1 ELSE 0 END) as opened_emails,
+            SUM(CASE WHEN clicked_at IS NOT NULL THEN 1 ELSE 0 END) as clicked_emails
+        FROM email_tracking et
+        JOIN campaigns c ON et.campaign_id = c.id
+        WHERE c.user_id = ?
                 ''',
                 (user_id,)
             )
@@ -1030,10 +1039,10 @@ def get_analytics(user_id: int) -> Dict:
                 clicked_emails = row[3] or 0
         except sqlite3.OperationalError:
             pass
-
-        return {
-            'lead_count': lead_count,
-            'campaign_count': campaign_count,
+            
+            return {
+        'lead_count': lead_count,
+        'campaign_count': campaign_count,
             'total_emails': total_emails,
             'sent_emails': sent_emails,
             'opened_emails': opened_emails,
@@ -1084,8 +1093,8 @@ def send_email_simulation(to_email: str, subject: str, content: str, profile_id:
             return True
 
         if not cfg or not cfg.get('smtp_username') or not cfg.get('smtp_password'):
-            print(f"Simulated email sent to {to_email}: {subject}")
-            return True
+    print(f"Simulated email sent to {to_email}: {subject}")
+    return True
 
         smtp_server = cfg.get('smtp_server', 'smtp.gmail.com')
         smtp_port = int(cfg.get('smtp_port', 587))
@@ -1366,7 +1375,7 @@ def show_login_page():
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
-        st.markdown("""
+    st.markdown("""
         <div class="dashboard-card">
             <h2 style="text-align: center; margin-bottom: 2rem;">🔐 Authentication</h2>
     </div>
@@ -1383,13 +1392,13 @@ def show_login_page():
                 if submit:
                     if username and password:
                         user = authenticate_user(username, password)
-                        if user:
-                            st.session_state.authenticated = True
-                            st.session_state.user = user
-                            st.success("Login successful!")
-                            st.rerun()
-                        else:
-                            st.error("Invalid username or password")
+                    if user:
+                        st.session_state.authenticated = True
+                        st.session_state.user = user
+                        st.success("Login successful!")
+                        st.rerun()
+                    else:
+                        st.error("Invalid username or password")
                     else:
                         st.error("Please fill in all fields")
         
@@ -1407,8 +1416,8 @@ def show_login_page():
                         if new_password == confirm_password:
                             if register_user(new_username, new_email, new_password, role.lower()):
                                 st.success("Registration successful! Please login.")
-                            else:
-                                st.error("Username or email already exists")
+                        else:
+                            st.error("Username or email already exists")
                         else:
                             st.error("Passwords do not match")
                     else:
@@ -1450,7 +1459,7 @@ def show_main_app():
         col1, col2 = st.columns(2)
         with col1:
             st.metric("Leads", analytics['lead_count'])
-        with col2:
+    with col2:
             st.metric("Campaigns", analytics['campaign_count'])
         
         st.markdown("---")
@@ -1458,7 +1467,7 @@ def show_main_app():
         render_realtime_counters(st.session_state.user['id'])
     
     # Logout button
-    if st.button("🚪 Logout", use_container_width=True):
+        if st.button("🚪 Logout", use_container_width=True):
         st.session_state.authenticated = False
         st.session_state.user = None
         st.rerun()
@@ -1542,7 +1551,7 @@ def show_home_page():
         if not leads_df.empty:
             category_counts = leads_df['category'].value_counts()
             fig = px.pie(values=category_counts.values, names=category_counts.index, title="Lead Categories")
-            st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
     
     with col2:
         st.markdown("""
@@ -1559,7 +1568,7 @@ def show_home_page():
                 'Count': [analytics['sent_emails'], analytics['opened_emails'], analytics['clicked_emails']]
             }
             fig = px.bar(performance_data, x='Metric', y='Count', title="Email Performance")
-            st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
 
 def show_lead_generation():
     """Show lead generation interface with scraping capabilities"""
@@ -1856,12 +1865,12 @@ def show_lead_management():
         type="csv",
         help="Upload a CSV file with lead data including names, emails, companies, and phone numbers"
     )
-    
-    if uploaded_file is not None:
-        try:
+        
+        if uploaded_file is not None:
+            try:
             # Read CSV
-            df = pd.read_csv(uploaded_file)
-            
+                df = pd.read_csv(uploaded_file)
+                
             # Validate required columns
             required_columns = ['name', 'email']
             missing_columns = [col for col in required_columns if col not in df.columns]
@@ -1886,26 +1895,26 @@ def show_lead_management():
                             # Validate email
                             validate_email(row['email'])
                             
-                            lead_data = {
+                        lead_data = {
                                 'name': row['name'],
                                 'email': row['email'],
-                                'company': row.get('company', ''),
-                                'phone': row.get('phone', ''),
-                                'title': row.get('title', ''),
-                                'industry': row.get('industry', ''),
+                            'company': row.get('company', ''),
+                            'phone': row.get('phone', ''),
+                            'title': row.get('title', ''),
+                            'industry': row.get('industry', ''),
                                 'category': row.get('category', 'General')
-                            }
-                            
+                        }
+                    
                             if add_lead(st.session_state.user['id'], lead_data):
                                 processed_count += 1
-                            
+                    
                             progress_bar.progress((index + 1) / len(df))
                             status_text.text(f"Processing lead {index + 1} of {len(df)}")
                         except EmailNotValidError:
                             st.warning(f"Invalid email for {row['name']}: {row['email']}")
-                        except Exception as e:
+            except Exception as e:
                             st.warning(f"Error processing {row.get('name', 'Unknown')}: {str(e)}")
-                    
+    
                     st.success(f"✅ Successfully processed {processed_count} leads!")
                     progress_bar.empty()
                     status_text.empty()
@@ -1918,16 +1927,16 @@ def show_lead_management():
     leads_df = get_user_leads(st.session_state.user['id'])
     
     if not leads_df.empty:
-        # Filters
-        col1, col2 = st.columns(2)
-        with col1:
+            # Filters
+            col1, col2 = st.columns(2)
+            with col1:
             categories = ['All'] + list(leads_df['category'].unique())
             selected_category = st.selectbox("Filter by Category", categories)
-        with col2:
+            with col2:
             statuses = ['All'] + list(leads_df['status'].unique())
             selected_status = st.selectbox("Filter by Status", statuses)
-        
-        # Apply filters
+            
+            # Apply filters
         filtered_df = leads_df.copy()
         if selected_category != 'All':
             filtered_df = filtered_df[filtered_df['category'] == selected_category]
@@ -1936,17 +1945,17 @@ def show_lead_management():
         
         # Display table
         st.dataframe(filtered_df[['name', 'email', 'company', 'category', 'status', 'score']])
-        
-        # Export button
+            
+            # Export button
         if st.button("📥 Export Leads as CSV"):
-            csv = filtered_df.to_csv(index=False)
-            st.download_button(
-                label="Download CSV",
-                data=csv,
+                csv = filtered_df.to_csv(index=False)
+                st.download_button(
+                    label="Download CSV",
+                    data=csv,
                 file_name=f"leads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
-    else:
+                    mime="text/csv"
+                )
+        else:
         st.info("No leads found. Upload a CSV file to get started!")
 
 def show_email_campaigns():
@@ -2258,8 +2267,8 @@ def show_email_campaigns():
                 file_name=f"campaigns_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv"
             )
-        else:
-            st.info("No campaigns found. Create your first campaign above!")
+                else:
+        st.info("No campaigns found. Create your first campaign above!")
 
 def show_analytics():
     """Show analytics dashboard"""
@@ -2282,17 +2291,17 @@ def show_analytics():
         st.metric("Open Rate", f"{open_rate:.1f}%")
     
     # Charts
-    col1, col2 = st.columns(2)
-    
-    with col1:
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
         st.markdown("### 📈 Lead Distribution")
         leads_df = get_user_leads(st.session_state.user['id'])
         if not leads_df.empty:
             category_counts = leads_df['category'].value_counts()
             fig = px.pie(values=category_counts.values, names=category_counts.index, title="Lead Categories")
             st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
+                    
+                    with col2:
         st.markdown("### 📧 Email Performance")
         if analytics['sent_emails'] > 0:
             performance_data = {
