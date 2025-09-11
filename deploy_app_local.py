@@ -102,6 +102,11 @@ def ensure_queue_worker_started():
         _QUEUE_THREAD = threading.Thread(target=_process_queue_loop, daemon=True)
         _QUEUE_THREAD.start()
 
+def ensure_queue_worker_stopped():
+    """Signal the background queue loop to stop."""
+    global _QUEUE_RUNNING
+    _QUEUE_RUNNING = False
+
 # Suppress warnings
 warnings.filterwarnings("ignore")
 
@@ -135,6 +140,16 @@ def _load_env_from_file() -> None:
                 pass
 
 _load_env_from_file()
+
+# Compatibility mapping for environment keys from older samples
+if os.getenv("SMTP_HOST") is None and os.getenv("SMTP_SERVER"):
+    os.environ["SMTP_HOST"] = os.getenv("SMTP_SERVER") or ""
+if os.getenv("SMTP_USER") is None and os.getenv("SMTP_USERNAME"):
+    os.environ["SMTP_USER"] = os.getenv("SMTP_USERNAME") or ""
+if os.getenv("SMTP_PASS") is None and os.getenv("SMTP_PASSWORD"):
+    os.environ["SMTP_PASS"] = os.getenv("SMTP_PASSWORD") or ""
+if os.getenv("SMTP_FROM") is None and os.getenv("FROM_EMAIL"):
+    os.environ["SMTP_FROM"] = os.getenv("FROM_EMAIL") or ""
 
 # Database setup
 DB_NAME = "leadai_pro.db"
@@ -941,7 +956,20 @@ def show_main_app():
         st.markdown("---")
         st.markdown("### 🎯 Navigation")
         
-        pages = ["Home", "Dashboard", "About", "Contact"]
+        pages = [
+            "Home",
+            "Dashboard",
+            "Lead Management",
+            "Email Campaigns",
+            "Email Tracking",
+            "Analytics",
+            "AI Assistant",
+            "Templates",
+            "Audit Logs",
+            "Settings",
+            "About",
+            "Contact",
+        ]
         # Admin page visible only for admins
         try:
             if st.session_state.user and st.session_state.user.get('role') == 'admin':
@@ -976,6 +1004,20 @@ def show_main_app():
         show_dashboard()
     elif current_page == "Admin":
         show_admin_panel()
+    elif current_page == "Lead Management":
+        show_lead_management()
+    elif current_page == "Email Campaigns":
+        show_email_campaigns()
+    elif current_page == "Email Tracking":
+        show_email_tracking()
+    elif current_page == "Analytics":
+        show_analytics()
+    elif current_page == "AI Assistant":
+        show_ai_assistant()
+    elif current_page == "Templates":
+        show_templates_page()
+    elif current_page == "Audit Logs":
+        show_audit_logs()
     elif current_page == "About":
         show_about()
     elif current_page == "Contact":
@@ -1082,6 +1124,19 @@ def show_dashboard():
         except Exception as e:
             st.error(f"Error reading CSV: {e}")
     
+    # Queue metrics and controls
+    qm = _queue_metrics()
+    colq1, colq2, colq3 = st.columns(3)
+    with colq1:
+        st.metric("Queued Emails", qm.get("queued", 0))
+    with colq2:
+        st.metric("Sent (last hour)", qm.get("sent_last_hour", 0))
+    with colq3:
+        if st.button("🧹 Clear My Queued Emails"):
+            n = _clear_user_queue(st.session_state.user['id'])
+            st.success(f"Cleared {n} queued emails for your account.")
+            st.rerun()
+
     # Email template
     st.markdown("### ✉️ Email Template")
     col1, col2 = st.columns(2)
@@ -1241,6 +1296,16 @@ def show_lead_management():
                                 'category': row.get('category', 'General')
                             }
                             
+                            # De-duplicate by email (keep latest)
+                            try:
+                                conn = sqlite3.connect(DB_NAME)
+                                cur = conn.cursor()
+                                cur.execute("DELETE FROM leads WHERE user_id = ? AND email = ?", (st.session_state.user['id'], lead_data['email']))
+                                conn.commit()
+                                conn.close()
+                            except Exception:
+                                pass
+
                             if add_lead(st.session_state.user['id'], lead_data):
                                 processed_count += 1
                             
@@ -1281,8 +1346,59 @@ def show_lead_management():
         if selected_status != 'All':
             filtered_df = filtered_df[filtered_df['status'] == selected_status]
         
+        # Inline lead scoring and status/category updates
+        st.markdown("### ⚖️ Lead Scoring & Updates")
+        colsc1, colsc2, colsc3 = st.columns(3)
+        with colsc1:
+            w_title = st.slider("Weight: Title present", 0, 50, 10)
+        with colsc2:
+            w_company = st.slider("Weight: Company present", 0, 50, 15)
+        with colsc3:
+            w_industry = st.slider("Weight: Industry present", 0, 50, 10)
+
+        if st.button("🔢 Recompute Scores"):
+            try:
+                conn = sqlite3.connect(DB_NAME)
+                cur = conn.cursor()
+                for _, row in filtered_df.iterrows():
+                    base = 50
+                    base += w_title if str(row.get('title', '')).strip() else 0
+                    base += w_company if str(row.get('company', '')).strip() else 0
+                    base += w_industry if str(row.get('industry', '')).strip() else 0
+                    score = max(0, min(100, int(base)))
+                    cur.execute("UPDATE leads SET score = ? WHERE id = ?", (score, int(row['id'])))
+                conn.commit()
+                conn.close()
+                st.success("Scores updated.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to update scores: {e}")
+
+        st.markdown("### ✏️ Bulk Update Status/Category")
+        # Choose subset by names
+        select_names = st.multiselect("Select leads to update", filtered_df['name'].tolist())
+        new_status = st.selectbox("New Status", ["New", "Contacted", "Qualified", "Won", "Lost"], index=0)
+        new_category = st.text_input("New Category (optional)", value="")
+        if st.button("💾 Apply Updates") and select_names:
+            try:
+                conn = sqlite3.connect(DB_NAME)
+                cur = conn.cursor()
+                ids = filtered_df[filtered_df['name'].isin(select_names)]['id'].tolist()
+                if new_category.strip():
+                    for lid in ids:
+                        cur.execute("UPDATE leads SET status = ?, category = ? WHERE id = ?", (new_status, new_category.strip(), int(lid)))
+                else:
+                    for lid in ids:
+                        cur.execute("UPDATE leads SET status = ? WHERE id = ?", (new_status, int(lid)))
+                conn.commit()
+                conn.close()
+                st.success("Leads updated.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to update leads: {e}")
+
         # Display table
-        st.dataframe(filtered_df[['name', 'email', 'company', 'category', 'status', 'score']])
+        st.dataframe(filtered_df[['id','name', 'email', 'company', 'category', 'status', 'score']])
         
         # Export button
         if st.button("📥 Export Leads as CSV"):
@@ -1361,7 +1477,18 @@ def show_email_campaigns():
             st.warning("No leads available. Please add leads first.")
         
         # Submit campaign
-        if st.form_submit_button("🚀 Create Campaign", type="primary"):
+        create_btn = st.form_submit_button("🚀 Create Campaign", type="primary")
+        test_btn = st.form_submit_button("🧪 Test Send to My Email")
+        if test_btn:
+            if subject_line and email_content:
+                to_me = st.session_state.user['email'] if st.session_state.user else None
+                if to_me:
+                    ok = send_email_simulation(to_me, subject_line, email_content.replace('{name}', st.session_state.user['username']))
+                    if ok:
+                        st.success(f"Test email sent to {to_me} (or simulated)")
+                else:
+                    st.warning("No user email found.")
+        if create_btn:
             if campaign_name and subject_line and email_content and selected_leads:
                 campaign_data = {
                     'name': campaign_name,
@@ -1394,8 +1521,69 @@ def show_email_campaigns():
     campaigns_df = get_campaigns(st.session_state.user['id'])
     
     if not campaigns_df.empty:
-        st.dataframe(campaigns_df[['name', 'subject', 'status', 'created_at']])
-        
+        st.dataframe(campaigns_df[['id','name', 'subject', 'status', 'created_at']])
+
+        # Actions: clone/delete/cancel schedule
+        st.markdown("### 🛠️ Campaign Actions")
+        target_ids = st.multiselect("Select campaign IDs", campaigns_df['id'].tolist())
+        colca1, colca2, colca3 = st.columns(3)
+        with colca1:
+            if st.button("🧬 Clone Selected") and target_ids:
+                try:
+                    conn = sqlite3.connect(DB_NAME)
+                    cur = conn.cursor()
+                    for cid in target_ids:
+                        cur.execute("SELECT name, subject, content, user_id FROM campaigns WHERE id = ?", (int(cid),))
+                        row = cur.fetchone()
+                        if row:
+                            name, subj, content, uid = row
+                            cur.execute("INSERT INTO campaigns (name, subject, content, status, user_id) VALUES (?, ?, ?, 'Draft', ?)", (f"{name} (Copy)", subj, content, uid))
+                    conn.commit()
+                    conn.close()
+                    st.success("Cloned.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Clone failed: {e}")
+        with colca2:
+            if st.button("🗑️ Delete Selected") and target_ids:
+                try:
+                    conn = sqlite3.connect(DB_NAME)
+                    cur = conn.cursor()
+                    q = ','.join(['?']*len(target_ids))
+                    cur.execute(f"DELETE FROM campaigns WHERE id IN ({q})", list(map(int, target_ids)))
+                    conn.commit()
+                    conn.close()
+                    st.success("Deleted.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Delete failed: {e}")
+        with colca3:
+            if st.button("⏹️ Cancel Schedule") and target_ids:
+                try:
+                    conn = sqlite3.connect(DB_NAME)
+                    cur = conn.cursor()
+                    for cid in target_ids:
+                        cur.execute("UPDATE campaigns SET status = 'Draft', scheduled_at = NULL WHERE id = ?", (int(cid),))
+                    conn.commit()
+                    conn.close()
+                    st.success("Schedules canceled.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Cancel failed: {e}")
+        st.markdown("### 🔁 Retry Queued Sends (Selected Campaigns)")
+        if st.button("♻️ Retry Failed/Queued Now") and target_ids:
+            try:
+                conn = sqlite3.connect(DB_NAME)
+                cur = conn.cursor()
+                # Bring scheduled_at to now for selected campaign queued items
+                q = ','.join(['?']*len(target_ids))
+                cur.execute(f"UPDATE send_queue SET scheduled_at = datetime('now'), status = 'queued' WHERE campaign_id IN ({q})", list(map(int, target_ids)))
+                conn.commit()
+                conn.close()
+                st.success("Queued items rescheduled to now.")
+            except Exception as e:
+                st.error(f"Retry failed: {e}")
+
         # Export campaigns
         if st.button("📥 Export Campaigns as CSV"):
             csv = campaigns_df.to_csv(index=False)
@@ -1407,6 +1595,141 @@ def show_email_campaigns():
             )
     else:
         st.info("No campaigns found. Create your first campaign above!")
+
+def show_email_tracking():
+    """Show per-user email tracking with filters and charts"""
+    st.markdown("## 📬 Email Tracking")
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cur = conn.cursor()
+        # Join tracking with leads and campaigns for context
+        cur.execute(
+            """
+            SELECT et.id, c.name as campaign_name, l.name as lead_name, et.email, et.status,
+                   et.sent_at, et.opened_at, et.clicked_at, et.click_count
+            FROM email_tracking et
+            JOIN campaigns c ON et.campaign_id = c.id
+            LEFT JOIN leads l ON et.lead_id = l.id
+            WHERE c.user_id = ?
+            ORDER BY et.sent_at DESC NULLS LAST, et.id DESC
+            """,
+            (st.session_state.user['id'],),
+        )
+        rows = cur.fetchall()
+        conn.close()
+        df = pd.DataFrame(
+            rows,
+            columns=[
+                "id",
+                "campaign",
+                "lead",
+                "email",
+                "status",
+                "sent_at",
+                "opened_at",
+                "clicked_at",
+                "click_count",
+            ],
+        )
+        if df.empty:
+            st.info("No email events yet. Schedule a campaign to see tracking here.")
+            return
+
+        # Filters
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            sel_campaign = st.selectbox("Campaign", ["All"] + sorted(df["campaign"].dropna().unique().tolist()))
+        with col2:
+            sel_status = st.selectbox("Status", ["All", "Pending", "Sent", "Opened", "Clicked"]) 
+        with col3:
+            only_clicked = st.checkbox("Only with clicks > 0", value=False)
+
+        fdf = df.copy()
+        if sel_campaign != "All":
+            fdf = fdf[fdf["campaign"] == sel_campaign]
+        if sel_status != "All":
+            if sel_status == "Opened":
+                fdf = fdf[fdf["opened_at"].notna()]
+            elif sel_status == "Clicked":
+                fdf = fdf[fdf["clicked_at"].notna()]
+            else:
+                fdf = fdf[fdf["status"] == sel_status]
+        if only_clicked:
+            fdf = fdf[(fdf["click_count"].fillna(0) > 0)]
+
+        st.dataframe(fdf[["id","campaign", "lead", "email", "status", "sent_at", "opened_at", "clicked_at", "click_count"]])
+
+        # Simple KPI
+        total = len(df)
+        sent = (df["status"] == "Sent").sum()
+        opened = df["opened_at"].notna().sum()
+        clicked = df["clicked_at"].notna().sum()
+        colA, colB, colC, colD = st.columns(4)
+        with colA:
+            st.metric("Events", total)
+        with colB:
+            st.metric("Sent", int(sent))
+        with colC:
+            st.metric("Opened", int(opened))
+        with colD:
+            st.metric("Clicked", int(clicked))
+
+        st.markdown("### 🧪 Simulate Events")
+        sel_ids = st.multiselect("Select tracking IDs", fdf['id'].tolist())
+        cola, colb = st.columns(2)
+        with cola:
+            if st.button("👁️ Mark Opened") and sel_ids:
+                try:
+                    conn = sqlite3.connect(DB_NAME)
+                    cur = conn.cursor()
+                    for tid in sel_ids:
+                        cur.execute("UPDATE email_tracking SET opened_at = CURRENT_TIMESTAMP WHERE id = ?", (int(tid),))
+                    conn.commit()
+                    conn.close()
+                    st.success("Marked opened.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed: {e}")
+        with colb:
+            if st.button("🖱️ Mark Clicked (+1)") and sel_ids:
+                try:
+                    conn = sqlite3.connect(DB_NAME)
+                    cur = conn.cursor()
+                    for tid in sel_ids:
+                        cur.execute("UPDATE email_tracking SET clicked_at = COALESCE(clicked_at, CURRENT_TIMESTAMP), click_count = COALESCE(click_count, 0) + 1 WHERE id = ?", (int(tid),))
+                    conn.commit()
+                    conn.close()
+                    st.success("Marked clicked.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed: {e}")
+    except Exception as e:
+        st.error(f"Failed to load tracking: {e}")
+
+def _queue_metrics() -> dict:
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM send_queue WHERE status = 'queued'")
+        queued = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM send_queue WHERE status = 'sent' AND datetime(created_at) >= datetime('now','-1 hour')")
+        sent_1h = cur.fetchone()[0]
+        conn.close()
+        return {"queued": queued, "sent_last_hour": sent_1h}
+    except Exception:
+        return {"queued": 0, "sent_last_hour": 0}
+
+def _clear_user_queue(user_id: int) -> int:
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM send_queue WHERE user_id = ? AND status = 'queued'", (user_id,))
+        affected = cur.rowcount if hasattr(cur, 'rowcount') else 0
+        conn.commit()
+        conn.close()
+    except Exception:
+        affected = 0
+    return affected
 
 def show_analytics():
     """Show analytics dashboard"""
@@ -1497,6 +1820,92 @@ def show_ai_assistant():
                         st.text_input("Generated Subject Line", value=generated_subject)
                 else:
                     st.warning("Please enter a topic for your email")
+
+def show_templates_page():
+    """Manage user templates (CRUD)"""
+    st.markdown("## 🧩 Templates")
+    with st.form("template_form_full"):
+        t_name = st.text_input("Template Name")
+        t_subject = st.text_input("Template Subject")
+        t_body = st.text_area("Template Body", height=160)
+        coltx, colty, coltz = st.columns(3)
+        save_t = coltx.form_submit_button("💾 Save/Update")
+        del_t = colty.form_submit_button("🗑️ Delete")
+        load_t = coltz.form_submit_button("📥 Load to Editor")
+        if save_t and t_name and t_subject and t_body:
+            try:
+                conn = sqlite3.connect(DB_NAME)
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO templates (user_id, name, subject, body)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(user_id, name) DO UPDATE SET subject=excluded.subject, body=excluded.body
+                    """,
+                    (st.session_state.user['id'], t_name, t_subject, t_body),
+                )
+                conn.commit()
+                conn.close()
+                st.success("Template saved.")
+            except Exception as e:
+                st.error(f"Failed to save template: {e}")
+        if del_t and t_name:
+            try:
+                conn = sqlite3.connect(DB_NAME)
+                cur = conn.cursor()
+                cur.execute("DELETE FROM templates WHERE user_id = ? AND name = ?", (st.session_state.user['id'], t_name))
+                conn.commit()
+                conn.close()
+                st.success("Template deleted.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to delete template: {e}")
+        if load_t and t_name:
+            try:
+                conn = sqlite3.connect(DB_NAME)
+                cur = conn.cursor()
+                cur.execute("SELECT subject, body FROM templates WHERE user_id = ? AND name = ?", (st.session_state.user['id'], t_name))
+                row = cur.fetchone()
+                conn.close()
+                if row:
+                    st.session_state.generated_subject = row[0]
+                    st.session_state.improved_content = row[1]
+                    st.success("Loaded into email editor fields (in Email Campaigns page).")
+                else:
+                    st.info("Template not found.")
+            except Exception as e:
+                st.error(f"Failed to load template: {e}")
+
+    # List templates
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cur = conn.cursor()
+        cur.execute("SELECT name, subject, created_at FROM templates WHERE user_id = ? ORDER BY created_at DESC", (st.session_state.user['id'],))
+        rows = cur.fetchall()
+        conn.close()
+        if rows:
+            st.markdown("#### Your Templates")
+            st.dataframe(pd.DataFrame(rows, columns=["name","subject","created_at"]))
+        else:
+            st.info("No templates yet. Create one above.")
+    except Exception:
+        pass
+
+def show_audit_logs():
+    """Display recent audit logs"""
+    st.markdown("## 🛡️ Audit Logs")
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cur = conn.cursor()
+        cur.execute("SELECT action, details, created_at FROM audit_logs WHERE user_id = ? ORDER BY created_at DESC LIMIT 200", (st.session_state.user['id'],))
+        rows = cur.fetchall()
+        conn.close()
+        if rows:
+            st.dataframe(pd.DataFrame(rows, columns=["action","details","created_at"]))
+        else:
+            st.info("No audit logs yet.")
+    except Exception as e:
+        st.error(f"Failed to load logs: {e}")
 
 def show_settings():
     """Show settings page"""
@@ -1623,6 +2032,19 @@ def show_settings():
             st.info("No suppressed emails.")
     except Exception:
         pass
+
+    st.markdown("### 📨 Queue Controls")
+    qm = _queue_metrics()
+    colq1, colq2, colq3 = st.columns(3)
+    with colq1:
+        st.metric("Queued Emails", qm.get("queued", 0))
+    with colq2:
+        st.metric("Sent (last hour)", qm.get("sent_last_hour", 0))
+    with colq3:
+        if st.button("🧹 Clear My Queued Emails (Settings)"):
+            n = _clear_user_queue(st.session_state.user['id'])
+            st.success(f"Cleared {n} queued emails for your account.")
+            st.rerun()
 
     # Template library
     st.markdown("### 🧩 Template Library")
