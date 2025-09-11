@@ -4,7 +4,7 @@ emoji: 🚀
 colorFrom: indigo
 colorTo: purple
 sdk: streamlit
-app_file: deploy_app.py
+app_file: deploy_app_local.py
 
 ---
 # 🚀 LeadAI Pro - AI-Powered Lead Management & Email Marketing Platform
@@ -256,3 +256,4 @@ For support, please open an issue on the GitHub repository or contact the develo
 
 
 **LeadAI Pro** - Empowering businesses with AI-driven lead management and email marketing solutions. 🚀
+
