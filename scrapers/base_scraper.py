@@ -52,14 +52,28 @@ class BaseScraper(ABC):
     def __init__(self, name: str, rate_limit_delay: float = 1.0):
         self.name = name
         self.rate_limit_delay = rate_limit_delay
-        self.ua = UserAgent()
+        
+        # Try to use fake-useragent, fallback to static UAs
+        try:
+            from fake_useragent import UserAgent
+            self.ua = UserAgent()
+            self._random_ua = None
+        except Exception:
+            self.ua = None
+            self._random_ua = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16 Safari/605.1.15",
+                "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
+            ]
+        
         self.session = requests.Session()
         self._setup_session()
     
     def _setup_session(self):
         """Setup session with headers and retry strategy"""
+        ua_value = self.ua.random if self.ua else self._random_ua[0]
         self.session.headers.update({
-            'User-Agent': self.ua.random,
+            'User-Agent': ua_value,
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
             'Accept-Encoding': 'gzip, deflate',
@@ -74,7 +88,11 @@ class BaseScraper(ABC):
     
     def _rotate_user_agent(self):
         """Rotate user agent to avoid detection"""
-        self.session.headers['User-Agent'] = self.ua.random
+        if self.ua:
+            self.session.headers['User-Agent'] = self.ua.random
+        elif self._random_ua:
+            import random
+            self.session.headers['User-Agent'] = random.choice(self._random_ua)
     
     @retry(
         stop=stop_after_attempt(3),
@@ -91,7 +109,9 @@ class BaseScraper(ABC):
             if random.random() < 0.3:
                 self._rotate_user_agent()
             
+            logger.info(f"Making request to {url} with params: {params}")
             response = self.session.get(url, params=params, timeout=30, **kwargs)
+            logger.info(f"Response status: {response.status_code}, content length: {len(response.content)}")
             response.raise_for_status()
             return response
             
