@@ -30,7 +30,23 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import requests
-from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+try:
+    from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+    # Create dummy classes for fallback
+    class pipeline:
+        def __init__(self, *args, **kwargs):
+            pass
+    class AutoTokenizer:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            return None
+    class AutoModelForCausalLM:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            return None
 import schedule
 import yagmail
 from email_validator import validate_email, EmailNotValidError
@@ -785,6 +801,9 @@ def register_user(username: str, email: str, password: str, role: str = 'user') 
 @st.cache_resource
 def load_ai_models():
     """Load AI models for content generation"""
+    if not TRANSFORMERS_AVAILABLE:
+        return None
+    
     try:
         # Load a lightweight model for text generation
         tokenizer = AutoTokenizer.from_pretrained("gpt2")
