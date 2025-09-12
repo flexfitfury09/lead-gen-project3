@@ -278,6 +278,26 @@ def _ensure_db_schema():
         conn.commit()
     except Exception:
         pass
+
+    # Email accounts schema (for multi-sender support)
+    try:
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS email_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                label TEXT NOT NULL,
+                smtp_server TEXT NOT NULL,
+                smtp_port INTEGER NOT NULL,
+                smtp_username TEXT NOT NULL,
+                smtp_password TEXT NOT NULL,
+                from_email TEXT NOT NULL,
+                use_tls INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+    except Exception:
+        pass
     conn.close()
 
 # Authentication functions
@@ -430,6 +450,46 @@ def load_email_config(user_id):
         with open(config_file, 'r') as f:
             return json.load(f)
     return None
+
+def add_email_account(user_id: int, label: str, server: str, port: int, username: str, password: str, from_email: str, use_tls: bool = True) -> int:
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            INSERT INTO email_accounts (user_id, label, smtp_server, smtp_port, smtp_username, smtp_password, from_email, use_tls)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, label, server, int(port), username, password, from_email, 1 if use_tls else 0))
+        eid = cursor.lastrowid
+        conn.commit()
+        return eid
+    finally:
+        conn.close()
+
+def list_email_accounts(user_id: int):
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            SELECT id, label, from_email, smtp_server, smtp_port, smtp_username, use_tls FROM email_accounts WHERE user_id = ? ORDER BY created_at DESC
+        ''', (user_id,))
+        rows = cursor.fetchall()
+        return [{'id': r[0], 'label': r[1], 'from_email': r[2], 'smtp_server': r[3], 'smtp_port': r[4], 'smtp_username': r[5], 'use_tls': bool(r[6])} for r in rows]
+    finally:
+        conn.close()
+
+def get_email_account(user_id: int, account_id: int):
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            SELECT id, label, from_email, smtp_server, smtp_port, smtp_username, smtp_password, use_tls FROM email_accounts WHERE user_id = ? AND id = ?
+        ''', (user_id, account_id))
+        r = cursor.fetchone()
+        if not r:
+            return None
+        return {'id': r[0], 'label': r[1], 'from_email': r[2], 'smtp_server': r[3], 'smtp_port': r[4], 'smtp_username': r[5], 'smtp_password': r[6], 'use_tls': bool(r[7])}
+    finally:
+        conn.close()
 
 # Lead management functions
 def add_lead(user_id, name, email, phone=None, company=None, title=None, industry=None, city=None, country=None, website=None, source='manual'):
@@ -1115,6 +1175,12 @@ def show_main_app():
         bulk = get_filtered_leads(st.session_state.user['id'], name_query=filt_name, limit=200)
         sel_ids = [l['id'] for l in bulk]
         st.write(f"Matched {len(sel_ids)} leads.")
+        # Select sender account and send delay
+        accounts_for_send = list_email_accounts(st.session_state.user['id'])
+        sender_map = {f"{a['label']} <{a['from_email']}> (# {a['id']})": a['id'] for a in accounts_for_send} if accounts_for_send else {}
+        selected_sender_label = st.selectbox("Send from account", list(sender_map.keys()) if sender_map else ["Default (single-config)"])
+        selected_sender_id = sender_map.get(selected_sender_label)
+        send_delay_minutes = st.number_input("Delay between emails (minutes)", min_value=0, max_value=120, value=0)
         if st.button("Start Bulk Send"):
             from time import sleep
             prog = st.progress(0.0)
@@ -1124,14 +1190,36 @@ def show_main_app():
                 email = l.get('email','')
                 if email:
                     try:
-                        send_email_simulation(email, subject, content, st.session_state.user['id'])
+                        # If account selected, temporarily override email config
+                        if selected_sender_id:
+                            acct = get_email_account(st.session_state.user['id'], int(selected_sender_id))
+                            if acct:
+                                # Temporarily set email config to account for send_email_simulation
+                                cfg = {
+                                    'smtp_server': acct['smtp_server'],
+                                    'smtp_port': acct['smtp_port'],
+                                    'smtp_username': acct['smtp_username'],
+                                    'smtp_password': acct['smtp_password']
+                                }
+                                # Stash and send
+                                # Note: send_email_simulation reads config via load_email_config; we simulate by writing a temp config
+                                save_email_config(st.session_state.user['id'], cfg)
+                                send_email_simulation(email, subject, content, st.session_state.user['id'], from_email=acct['from_email'])
+                            else:
+                                send_email_simulation(email, subject, content, st.session_state.user['id'])
+                        else:
+                            send_email_simulation(email, subject, content, st.session_state.user['id'])
                         # Track send
                         _insert_email_tracking(0, l['id'], email, 'sent')
                     except Exception:
                         pass
                 done += 1
                 prog.progress(min(1.0, done/max(1,total)))
-                sleep(0.05)
+                # Apply user-selected delay between sends (minutes)
+                if send_delay_minutes > 0:
+                    sleep(int(send_delay_minutes) * 60)
+                else:
+                    sleep(0.05)
             st.success(f"Bulk process completed for {total} leads.")
         st.markdown("### Drip Sequences")
         seq_name = st.text_input("Sequence name")
@@ -1168,6 +1256,25 @@ def show_main_app():
                 lead_ids = [l['id'] for l in segment_leads]
                 schedule_sequence_for_leads(st.session_state.user['id'], sel_seq, lead_ids, datetime.now())
                 st.success("Sequence scheduled for selected segment.")
+        st.markdown("### Email Accounts (From addresses)")
+        with st.expander("Manage Email Accounts"):
+            colA, colB = st.columns(2)
+            with colA:
+                label = st.text_input("Label", key="acc_label")
+                from_email_cfg = st.text_input("From Email", key="acc_from")
+                server = st.text_input("SMTP Server", value="smtp.gmail.com", key="acc_server")
+                port = st.number_input("SMTP Port", min_value=1, max_value=65535, value=587, key="acc_port")
+            with colB:
+                username = st.text_input("SMTP Username", key="acc_user")
+                password = st.text_input("SMTP Password", type="password", key="acc_pass")
+                use_tls = st.checkbox("Use TLS", value=True, key="acc_tls")
+                if st.button("Add Email Account") and label and from_email_cfg and server and port and username and password:
+                    add_email_account(st.session_state.user['id'], label, server, int(port), username, password, from_email_cfg, use_tls)
+                    st.success("Email account added.")
+            accounts = list_email_accounts(st.session_state.user['id'])
+            if accounts:
+                import pandas as pd
+                st.dataframe(pd.DataFrame(accounts), use_container_width=True)
         st.markdown("### Your Campaigns")
         st.dataframe(get_campaigns(st.session_state.user['id']), use_container_width=True)
     elif current_page == "Analytics":
