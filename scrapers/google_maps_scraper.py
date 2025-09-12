@@ -7,6 +7,7 @@ import re
 import json
 from typing import Dict, List, Optional
 from bs4 import BeautifulSoup
+import logging
 from .base_scraper import BaseScraper, LeadData
 
 class GoogleMapsScraper(BaseScraper):
@@ -15,6 +16,7 @@ class GoogleMapsScraper(BaseScraper):
     def __init__(self):
         super().__init__("Google Maps", rate_limit_delay=2.0)
         self.base_url = "https://www.google.com/maps/search"
+        self._logger = logging.getLogger(__name__)
     
     def search_leads(self, 
                     city: str, 
@@ -41,7 +43,7 @@ class GoogleMapsScraper(BaseScraper):
                 'gl': country.lower()
             }
             
-            logger.info(f"Searching Google Maps for: {search_query}")
+            self._logger.info(f"Searching Google Maps for: {search_query}")
             
             # Make request
             response = self._make_request(self.base_url, params=params)
@@ -56,10 +58,10 @@ class GoogleMapsScraper(BaseScraper):
             # Limit results
             leads = leads[:limit]
             
-            logger.info(f"Found {len(leads)} leads from Google Maps")
+            self._logger.info(f"Found {len(leads)} leads from Google Maps")
             
         except Exception as e:
-            logger.error(f"Error scraping Google Maps: {e}")
+            self._logger.error(f"Error scraping Google Maps: {e}")
         
         return leads
     
@@ -89,7 +91,7 @@ class GoogleMapsScraper(BaseScraper):
                     continue
                     
         except Exception as e:
-            logger.warning(f"Error extracting JSON-LD data: {e}")
+            self._logger.warning(f"Error extracting JSON-LD data: {e}")
         
         return leads
     
@@ -142,7 +144,7 @@ class GoogleMapsScraper(BaseScraper):
             )
             
         except Exception as e:
-            logger.warning(f"Error parsing JSON-LD business: {e}")
+            self._logger.warning(f"Error parsing JSON-LD business: {e}")
             return None
     
     def _extract_from_html(self, soup: BeautifulSoup, city: str, country: str, niche: str) -> List[LeadData]:
@@ -168,7 +170,7 @@ class GoogleMapsScraper(BaseScraper):
                         leads.append(lead)
                         
         except Exception as e:
-            logger.warning(f"Error extracting HTML data: {e}")
+            self._logger.warning(f"Error extracting HTML data: {e}")
         
         return leads
     
@@ -239,7 +241,7 @@ class GoogleMapsScraper(BaseScraper):
             )
             
         except Exception as e:
-            logger.warning(f"Error parsing HTML business: {e}")
+            self._logger.warning(f"Error parsing HTML business: {e}")
             return None
     
     def _get_timestamp(self) -> str:

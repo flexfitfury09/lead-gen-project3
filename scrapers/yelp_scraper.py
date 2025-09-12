@@ -6,6 +6,7 @@ Scrapes business listings from Yelp search results
 import re
 from typing import Dict, List, Optional
 from bs4 import BeautifulSoup
+import logging
 from urllib.parse import quote_plus, urljoin
 from .base_scraper import BaseScraper, LeadData
 
@@ -15,6 +16,7 @@ class YelpScraper(BaseScraper):
     def __init__(self):
         super().__init__("Yelp", rate_limit_delay=1.5)
         self.base_url = "https://www.yelp.com/search"
+        self._logger = logging.getLogger(__name__)
     
     def search_leads(self, 
                     city: str, 
@@ -41,7 +43,7 @@ class YelpScraper(BaseScraper):
                 'ns': '1'  # Sort by relevance
             }
             
-            logger.info(f"Searching Yelp for: {search_query} in {location}")
+            self._logger.info(f"Searching Yelp for: {search_query} in {location}")
             
             # Make request
             response = self._make_request(self.base_url, params=params)
@@ -57,10 +59,10 @@ class YelpScraper(BaseScraper):
             # Limit results
             leads = leads[:limit]
             
-            logger.info(f"Found {len(leads)} leads from Yelp")
+            self._logger.info(f"Found {len(leads)} leads from Yelp")
             
         except Exception as e:
-            logger.error(f"Error scraping Yelp: {e}")
+            self._logger.error(f"Error scraping Yelp: {e}")
         
         return leads
     
@@ -94,7 +96,7 @@ class YelpScraper(BaseScraper):
                     leads.append(lead)
                     
         except Exception as e:
-            logger.warning(f"Error extracting business listings: {e}")
+            self._logger.warning(f"Error extracting business listings: {e}")
         
         return leads
     
@@ -214,7 +216,7 @@ class YelpScraper(BaseScraper):
             )
             
         except Exception as e:
-            logger.warning(f"Error parsing business listing: {e}")
+            self._logger.warning(f"Error parsing business listing: {e}")
             return None
     
     def _scrape_additional_pages(self, soup: BeautifulSoup, city: str, country: str, niche: str, remaining_limit: int) -> List[LeadData]:
@@ -249,7 +251,7 @@ class YelpScraper(BaseScraper):
                 leads.extend(additional_leads[:remaining_limit])
                 
         except Exception as e:
-            logger.warning(f"Error scraping additional pages: {e}")
+            self._logger.warning(f"Error scraping additional pages: {e}")
         
         return leads
     

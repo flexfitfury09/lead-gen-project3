@@ -6,6 +6,7 @@ Scrapes business listings from Yellow Pages search results
 import re
 from typing import Dict, List, Optional
 from bs4 import BeautifulSoup
+import logging
 from urllib.parse import quote_plus, urljoin
 from .base_scraper import BaseScraper, LeadData
 
@@ -15,6 +16,7 @@ class YellowPagesScraper(BaseScraper):
     def __init__(self):
         super().__init__("Yellow Pages", rate_limit_delay=1.2)
         self.base_url = "https://www.yellowpages.com/search"
+        self._logger = logging.getLogger(__name__)
     
     def search_leads(self, 
                     city: str, 
@@ -40,7 +42,7 @@ class YellowPagesScraper(BaseScraper):
                 'geo_location_terms': location
             }
             
-            logger.info(f"Searching Yellow Pages for: {search_query} in {location}")
+            self._logger.info(f"Searching Yellow Pages for: {search_query} in {location}")
             
             # Make request
             response = self._make_request(self.base_url, params=params)
@@ -56,10 +58,10 @@ class YellowPagesScraper(BaseScraper):
             # Limit results
             leads = leads[:limit]
             
-            logger.info(f"Found {len(leads)} leads from Yellow Pages")
+            self._logger.info(f"Found {len(leads)} leads from Yellow Pages")
             
         except Exception as e:
-            logger.error(f"Error scraping Yellow Pages: {e}")
+            self._logger.error(f"Error scraping Yellow Pages: {e}")
         
         return leads
     
@@ -94,7 +96,7 @@ class YellowPagesScraper(BaseScraper):
                     leads.append(lead)
                     
         except Exception as e:
-            logger.warning(f"Error extracting business listings: {e}")
+            self._logger.warning(f"Error extracting business listings: {e}")
         
         return leads
     
@@ -251,7 +253,7 @@ class YellowPagesScraper(BaseScraper):
             )
             
         except Exception as e:
-            logger.warning(f"Error parsing business listing: {e}")
+            self._logger.warning(f"Error parsing business listing: {e}")
             return None
     
     def _scrape_additional_pages(self, soup: BeautifulSoup, city: str, country: str, niche: str, remaining_limit: int) -> List[LeadData]:
@@ -287,7 +289,7 @@ class YellowPagesScraper(BaseScraper):
                 leads.extend(additional_leads[:remaining_limit])
                 
         except Exception as e:
-            logger.warning(f"Error scraping additional pages: {e}")
+            self._logger.warning(f"Error scraping additional pages: {e}")
         
         return leads
     
