@@ -842,7 +842,8 @@ def render_realtime_counters(user_id, key: str = "realtime_refresh"):
     try:
         # This would connect to your FastAPI backend WebSocket
         # For now, we'll use auto-refresh as fallback
-        st_autorefresh(interval=3000, key=key)
+        if st.session_state.get('enable_global_autorefresh', True):
+            st_autorefresh(interval=3000, key=key)
         
         # Get current analytics
         analytics = get_analytics(user_id)
@@ -994,8 +995,10 @@ def show_main_app():
             f_tag = st.text_input("Tag filter", value=st.session_state.get('tag_filter',''))
             st.session_state['tag_filter'] = f_tag
         st.markdown("### CSV Import")
-        uploaded = st.file_uploader("Upload CSV of leads", type=["csv"], accept_multiple_files=False)
-        if uploaded is not None:
+        if 'csv_import_done' not in st.session_state:
+            st.session_state.csv_import_done = False
+        uploaded = st.file_uploader("Upload CSV of leads", type=["csv"], accept_multiple_files=False, key="leads_csv")
+        if uploaded is not None and not st.session_state.csv_import_done:
             try:
                 import pandas as pd
                 df = pd.read_csv(uploaded)
@@ -1026,8 +1029,11 @@ def show_main_app():
                         except Exception:
                             pass
                     st.success(f"Imported {inserted} leads from CSV.")
+                    st.session_state.csv_import_done = True
             except Exception as e:
                 st.error(f"Failed to import CSV: {e}")
+        if st.session_state.csv_import_done and st.button("Reset Import State"):
+            st.session_state.csv_import_done = False
         st.markdown("### Leads")
         leads = get_filtered_leads(st.session_state.user['id'], name_query=f_name, tag_query=f_tag, city=f_city, country=f_country, limit=200)
         if leads:
