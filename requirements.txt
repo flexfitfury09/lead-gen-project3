@@ -18,6 +18,4 @@ beautifulsoup4>=4.12.3
 lxml>=4.9.3
 fake-useragent>=1.5.1
 tqdm>=4.66.1
-
 tenacity>=8.2.3
-

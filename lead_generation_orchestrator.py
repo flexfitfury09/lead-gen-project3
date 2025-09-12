@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 from tqdm import tqdm
 
-from scrapers import GoogleMapsScraper, YelpScraper, YellowPagesScraper, LinkedInScraper, TestScraper
+from scrapers import GoogleMapsScraper, YelpScraper, YellowPagesScraper, TestScraper
 from lead_database_enhanced import LeadDatabase
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,6 @@ class LeadGenerationOrchestrator:
             'google_maps': GoogleMapsScraper(),
             'yelp': YelpScraper(),
             'yellowpages': YellowPagesScraper(),
-            'linkedin': LinkedInScraper(),
             'test': TestScraper()
         }
         self.results = {}
@@ -43,7 +42,10 @@ class LeadGenerationOrchestrator:
                       business_name: Optional[str] = None,
                       limit: int = 50,
                       sources: Optional[List[str]] = None,
-                      progress_callback: Optional[callable] = None) -> Dict:
+                      progress_callback: Optional[callable] = None,
+                      deduplicate: bool = True,
+                      address: Optional[str] = None,
+                      user_id: Optional[int] = None) -> Dict:
         """
         Generate leads from multiple sources
         
@@ -61,6 +63,23 @@ class LeadGenerationOrchestrator:
         """
         if sources is None:
             sources = list(self.scrapers.keys())
+        # Map any human-readable names from UI to internal keys
+        mapped_sources = []
+        for s in sources:
+            key = s
+            s_lower = s.lower().strip()
+            if s_lower in ["google maps", "google_maps", "google"]:
+                key = 'google_maps'
+            elif s_lower in ["yelp"]:
+                key = 'yelp'
+            elif s_lower in ["yellow pages", "yellowpages", "yellow_pages"]:
+                key = 'yellowpages'
+            elif s_lower in ["test", "test scraper", "test_scraper"]:
+                key = 'test'
+            # Skip unsupported sources like linkedin
+            if key in self.scrapers and key not in mapped_sources:
+                mapped_sources.append(key)
+        sources = mapped_sources or list(self.scrapers.keys())
         
         self.is_running = True
         self.results = {}
@@ -107,7 +126,7 @@ class LeadGenerationOrchestrator:
                     all_leads.extend(result.get('leads', []))
             
             # Deduplicate leads
-            deduplicated_leads = self._deduplicate_leads(all_leads)
+            deduplicated_leads = self._deduplicate_leads(all_leads) if deduplicate else all_leads
             
             # Store in database
             if self.db:
@@ -124,6 +143,7 @@ class LeadGenerationOrchestrator:
                 'total_found': len(all_leads),
                 'duplicates_removed': len(all_leads) - len(deduplicated_leads),
                 'successfully_inserted': successfully_inserted,
+                'inserted': successfully_inserted,
                 'sources_used': sources,
                 'leads_per_source': {source: len(result.get('leads', [])) for source, result in self.results.items()},
                 'errors': {source: result.get('error') for source, result in self.results.items() if result.get('error')},
@@ -223,7 +243,13 @@ class LeadGenerationOrchestrator:
     
     def get_available_sources(self) -> List[str]:
         """Get list of available scrapers"""
-        return list(self.scrapers.keys())
+        # Return human-readable names for UI selection
+        return [
+            'Google Maps',
+            'Yelp',
+            'Yellow Pages',
+            'Test Scraper'
+        ]
     
     def get_source_info(self) -> Dict[str, Dict]:
         """Get information about each scraper"""
@@ -244,12 +270,6 @@ class LeadGenerationOrchestrator:
                 'name': 'Yellow Pages',
                 'description': 'Traditional business directory listings',
                 'rate_limit': '1.2s',
-                'reliability': 'Medium'
-            },
-            'linkedin': {
-                'name': 'LinkedIn',
-                'description': 'Company pages from LinkedIn (via Bing search)',
-                'rate_limit': '2.5s',
                 'reliability': 'Medium'
             },
             'test': {
