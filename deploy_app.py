@@ -8,7 +8,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-from datetime import datetime
+from datetime import datetime, timedelta
 try:
     from streamlit_autorefresh import st_autorefresh
     AUTOREFRESH_AVAILABLE = True
@@ -19,42 +19,10 @@ except ImportError:
 from tenacity import retry, stop_after_attempt, wait_exponential
 import urllib.parse
 
-# Lead Generation imports (with error reporting)
 import sys
 import os
-try:
-    # Ensure current directory is on sys.path
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    if current_dir not in sys.path:
-        sys.path.append(current_dir)
-    
-    from lead_generation_orchestrator import LeadGenerationOrchestrator
-    from lead_database_enhanced import LeadDatabase
-    LEAD_GENERATION_AVAILABLE = True
-except Exception as e:
-    LEAD_GENERATION_AVAILABLE = False
-    st.error(f"Lead generation unavailable: {e}")
-    st.error(f"Current directory: {current_dir}")
-    st.error(f"Python path: {sys.path[:3]}...")
 
-# Optional transformers import (commented out in requirements.txt)
-try:
-    from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
-    TRANSFORMERS_AVAILABLE = True
-except (ImportError, ValueError, OSError) as e:
-    TRANSFORMERS_AVAILABLE = False
-    # Create dummy classes for fallback
-    class pipeline:
-        def __init__(self, *args, **kwargs):
-            pass
-    class AutoTokenizer:
-        @staticmethod
-        def from_pretrained(*args, **kwargs):
-            return None
-    class AutoModelForCausalLM:
-        @staticmethod
-        def from_pretrained(*args, **kwargs):
-            return None
+# Optional transformers import removed to simplify main app and avoid heavy deps
 
 # Page configuration
 st.set_page_config(
@@ -258,6 +226,58 @@ def _ensure_db_schema():
             ''')
     
     conn.commit()
+
+    # Ensure optional columns exist (safe migrations)
+    try:
+        def _column_exists(curs, table_name, column_name):
+            curs.execute(f"PRAGMA table_info({table_name})")
+            return any(row[1] == column_name for row in curs.fetchall())
+
+        # Add tags column to leads if missing
+        if not _column_exists(cursor, 'leads', 'tags'):
+            cursor.execute("ALTER TABLE leads ADD COLUMN tags TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        pass
+
+    # Drip sequences schema
+    try:
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sequences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sequence_steps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sequence_id INTEGER NOT NULL,
+                step_order INTEGER NOT NULL,
+                delay_days INTEGER NOT NULL,
+                subject TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sequence_id) REFERENCES sequences(id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS scheduled_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                lead_id INTEGER NOT NULL,
+                sequence_id INTEGER NOT NULL,
+                step_id INTEGER NOT NULL,
+                scheduled_at TIMESTAMP NOT NULL,
+                status TEXT DEFAULT 'scheduled',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+    except Exception:
+        pass
     conn.close()
 
 # Authentication functions
@@ -282,6 +302,96 @@ def register_user(username, email, password, role='user'):
         return False
     finally:
         conn.close()
+
+def list_users():
+    """List all users (admin only)."""
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute('SELECT id, username, email, role, created_at FROM users ORDER BY created_at DESC')
+        rows = cursor.fetchall()
+        return [{'id': r[0], 'username': r[1], 'email': r[2], 'role': r[3], 'created_at': r[4]} for r in rows]
+    finally:
+        conn.close()
+
+def update_user_role(user_id: int, role: str):
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute('UPDATE users SET role = ? WHERE id = ?', (role, user_id))
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+# DNS checks (no backend required)
+def check_spf_record(domain: str):
+    try:
+        import dns.resolver
+    except Exception:
+        return { 'ok': False, 'error': 'dnspython not installed', 'spf': '' }
+    try:
+        answers = dns.resolver.resolve(domain, 'TXT')
+        for rdata in answers:
+            txt = ''.join([b.decode('utf-8') if isinstance(b, (bytes, bytearray)) else b for b in rdata.strings])
+            if txt.lower().startswith('v=spf1'):
+                return { 'ok': True, 'spf': txt }
+        return { 'ok': False, 'error': 'No SPF record found', 'spf': '' }
+    except Exception as e:
+        return { 'ok': False, 'error': str(e), 'spf': '' }
+
+def check_dkim_record(domain: str, selector: str):
+    try:
+        import dns.resolver
+    except Exception:
+        return { 'ok': False, 'error': 'dnspython not installed', 'dkim': '' }
+    try:
+        name = f"{selector}._domainkey.{domain}"
+        answers = dns.resolver.resolve(name, 'TXT')
+        for rdata in answers:
+            txt = ''.join([b.decode('utf-8') if isinstance(b, (bytes, bytearray)) else b for b in rdata.strings])
+            if 'v=DKIM1' in txt or 'k=rsa' in txt:
+                return { 'ok': True, 'dkim': txt }
+        return { 'ok': False, 'error': 'No DKIM record found', 'dkim': '' }
+    except Exception as e:
+        return { 'ok': False, 'error': str(e), 'dkim': '' }
+
+def _suppress_email_for_user(user_id: int, email: str):
+    path = f"suppression_list_{user_id}.txt"
+    try:
+        existing = set()
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                existing = set(line.strip().lower() for line in f if line.strip())
+        email_l = email.strip().lower()
+        if email_l not in existing:
+            with open(path, 'a') as f:
+                f.write(email_l + "\n")
+        return True
+    except Exception:
+        return False
+
+def _mark_email_bounced(email: str):
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE email_tracking SET status = 'bounced' WHERE email = ?", (email,))
+        conn.commit()
+    finally:
+        conn.close()
+
+def process_webhook_event(user_id: int, event: dict):
+    etype = str(event.get('type','')).lower()
+    email = event.get('email') or event.get('recipient') or ''
+    if not email:
+        return 'ignored: no email'
+    if etype in ('bounce','bounced','complaint','spamreport','spam_report'):
+        _suppress_email_for_user(user_id, email)
+        _mark_email_bounced(email)
+        return f"suppressed:{etype}"
+    return 'processed'
 
 def authenticate_user(username, password):
     """Authenticate user login"""
@@ -335,6 +445,21 @@ def add_lead(user_id, name, email, phone=None, company=None, title=None, industr
     conn.commit()
     conn.close()
 
+def update_lead_status_bulk(user_id: int, lead_ids: list, new_status: str):
+    """Bulk update status for selected leads belonging to the user."""
+    if not lead_ids:
+        return 0
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        q_marks = ','.join('?' for _ in lead_ids)
+        params = [new_status, user_id] + lead_ids
+        cursor.execute(f"UPDATE leads SET status = ? WHERE user_id = ? AND id IN ({q_marks})", params)
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
 def get_leads(user_id, limit=100):
     """Get leads for user"""
     conn = sqlite3.connect('lead_gen.db')
@@ -380,6 +505,180 @@ def create_campaign(user_id, name, subject, content):
     conn.close()
     
     return campaign_id
+
+# Drip sequence CRUD helpers
+def create_sequence(user_id: int, name: str, description: str = "") -> int:
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            INSERT INTO sequences (user_id, name, description)
+            VALUES (?, ?, ?)
+        ''', (user_id, name, description))
+        sid = cursor.lastrowid
+        conn.commit()
+        return sid
+    finally:
+        conn.close()
+
+def add_sequence_step(sequence_id: int, step_order: int, delay_days: int, subject: str, content: str) -> int:
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            INSERT INTO sequence_steps (sequence_id, step_order, delay_days, subject, content)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (sequence_id, step_order, delay_days, subject, content))
+        step_id = cursor.lastrowid
+        conn.commit()
+        return step_id
+    finally:
+        conn.close()
+
+def get_sequences(user_id: int):
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT id, name, description, created_at FROM sequences WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
+        rows = cursor.fetchall()
+        result = []
+        for row in rows:
+            result.append({'id': row[0], 'name': row[1], 'description': row[2], 'created_at': row[3]})
+        return result
+    finally:
+        conn.close()
+
+def get_sequence_steps(sequence_id: int):
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT id, step_order, delay_days, subject, content FROM sequence_steps WHERE sequence_id = ? ORDER BY step_order ASC", (sequence_id,))
+        rows = cursor.fetchall()
+        result = []
+        for row in rows:
+            result.append({'id': row[0], 'step_order': row[1], 'delay_days': row[2], 'subject': row[3], 'content': row[4]})
+        return result
+    finally:
+        conn.close()
+
+def schedule_sequence_for_leads(user_id: int, sequence_id: int, lead_ids: list, start_date: datetime):
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        steps = get_sequence_steps(sequence_id)
+        for lead_id in lead_ids:
+            for s in steps:
+                sched_at = datetime.combine(start_date.date(), datetime.min.time()) + timedelta(days=int(s['delay_days']))
+                cursor.execute('''
+                    INSERT INTO scheduled_jobs (user_id, lead_id, sequence_id, step_id, scheduled_at)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (user_id, lead_id, sequence_id, s['id'], sched_at.isoformat()))
+        conn.commit()
+    finally:
+        conn.close()
+def _insert_email_tracking(campaign_id: int, lead_id: int, email: str, status: str = 'sent'):
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            INSERT INTO email_tracking (campaign_id, lead_id, email, status)
+            VALUES (?, ?, ?, ?)
+        ''', (campaign_id, lead_id, email, status))
+        conn.commit()
+    finally:
+        conn.close()
+
+def process_scheduled_jobs(max_jobs: int = 50):
+    """Process due scheduled jobs (simple in-app scheduler)."""
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        now_iso = datetime.now().isoformat()
+        cursor.execute('''
+            SELECT id, user_id, lead_id, sequence_id, step_id, scheduled_at
+            FROM scheduled_jobs
+            WHERE status = 'scheduled' AND scheduled_at <= ?
+            ORDER BY scheduled_at ASC
+            LIMIT ?
+        ''', (now_iso, max_jobs))
+        jobs = cursor.fetchall()
+        if not jobs:
+            return 0
+        # Load step content for each job
+        processed = 0
+        for job in jobs:
+            job_id, user_id, lead_id, sequence_id, step_id, scheduled_at = job
+            # Fetch lead email
+            cursor.execute("SELECT email FROM leads WHERE id = ?", (lead_id,))
+            row = cursor.fetchone()
+            email = row[0] if row else ''
+            if not email:
+                cursor.execute("UPDATE scheduled_jobs SET status = 'skipped' WHERE id = ?", (job_id,))
+                continue
+            # Fetch step subject/content
+            cursor.execute("SELECT subject, content FROM sequence_steps WHERE id = ?", (step_id,))
+            srow = cursor.fetchone()
+            if not srow:
+                cursor.execute("UPDATE scheduled_jobs SET status = 'skipped' WHERE id = ?", (job_id,))
+                continue
+            subject, content = srow
+            # Send (simulate) and track
+            try:
+                send_email_simulation(email, subject, content, user_id)
+                _insert_email_tracking(0, lead_id, email, 'sent')
+                cursor.execute("UPDATE scheduled_jobs SET status = 'sent' WHERE id = ?", (job_id,))
+            except Exception:
+                cursor.execute("UPDATE scheduled_jobs SET status = 'error' WHERE id = ?", (job_id,))
+            processed += 1
+        conn.commit()
+        return processed
+    finally:
+        conn.close()
+
+def update_lead_tags(lead_id: int, tags: str):
+    """Update tags for a given lead (comma-separated)."""
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE leads SET tags = ? WHERE id = ?", (tags, lead_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+def get_filtered_leads(user_id: int, name_query: str = "", tag_query: str = "", city: str = "", country: str = "", limit: int = 200):
+    """Return leads filtered by basic fields and tags."""
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        query = "SELECT id, name, email, phone, company, title, industry, city, country, website, source, status, created_at, COALESCE(tags, '') as tags FROM leads WHERE user_id = ?"
+        params = [user_id]
+        if name_query:
+            query += " AND name LIKE ?"
+            params.append(f"%{name_query}%")
+        if city:
+            query += " AND city LIKE ?"
+            params.append(f"%{city}%")
+        if country:
+            query += " AND country LIKE ?"
+            params.append(f"%{country}%")
+        if tag_query:
+            # simple contains match on tags CSV
+            query += " AND COALESCE(tags,'') LIKE ?"
+            params.append(f"%{tag_query}%")
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        result = []
+        for r in rows:
+            result.append({
+                'id': r[0], 'name': r[1], 'email': r[2], 'phone': r[3], 'company': r[4], 'title': r[5],
+                'industry': r[6], 'city': r[7], 'country': r[8], 'website': r[9], 'source': r[10],
+                'status': r[11], 'created_at': r[12], 'tags': r[13]
+            })
+        return result
+    finally:
+        conn.close()
 
 def get_campaigns(user_id):
     """Get campaigns for user"""
@@ -535,7 +834,7 @@ def send_email_simulation(to_email, subject, content, user_id, from_email=None):
         raise
 
 # Real-time counters
-def render_realtime_counters(user_id):
+def render_realtime_counters(user_id, key: str = "realtime_refresh"):
     """Render real-time counters with WebSocket connection"""
     col1, col2, col3, col4 = st.columns(4)
     
@@ -543,7 +842,7 @@ def render_realtime_counters(user_id):
     try:
         # This would connect to your FastAPI backend WebSocket
         # For now, we'll use auto-refresh as fallback
-        st_autorefresh(interval=3000, key="realtime_refresh")
+        st_autorefresh(interval=3000, key=key)
         
         # Get current analytics
         analytics = get_analytics(user_id)
@@ -570,180 +869,6 @@ def render_realtime_counters(user_id):
         with col4:
             st.metric("🖱️ Clicked", analytics['clicked_emails'])
 
-# Lead Generation Page
-def show_lead_generation():
-    """Show lead generation page"""
-    st.markdown("## 🎯 Lead Generation")
-    
-    if not LEAD_GENERATION_AVAILABLE:
-        st.error("Lead generation features are not available. Please ensure all dependencies are installed.")
-        st.markdown("""
-        **Required files:**
-        - `lead_generation_orchestrator.py`
-        - `lead_database_enhanced.py`
-        - `scrapers/` folder with all scraper files
-        
-        **Required dependencies:**
-        - `beautifulsoup4`
-        - `lxml`
-        - `fake-useragent`
-        - `tqdm`
-        - `tenacity`
-        """)
-        return
-    
-    # Initialize orchestrator
-    try:
-        if 'lead_orchestrator' not in st.session_state:
-            st.session_state.lead_orchestrator = LeadGenerationOrchestrator()
-        
-        orchestrator = st.session_state.lead_orchestrator
-        
-        if not orchestrator.db:
-            st.warning("Lead database is not available. Some features may not work.")
-    except Exception as e:
-        st.error(f"Failed to initialize lead generation: {e}")
-        return
-    
-    # Input form
-    with st.form("lead_generation_form"):
-        st.markdown("### 📝 Lead Generation Parameters")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            city = st.text_input("City", placeholder="e.g., New York")
-            country = st.text_input("Country", placeholder="e.g., USA")
-            niche = st.text_input("Niche/Industry", placeholder="e.g., Restaurants")
-        
-        with col2:
-            business_name = st.text_input("Business Name (Optional)", placeholder="e.g., Joe's Pizza")
-            address = st.text_input("Address (Optional)", placeholder="e.g., 123 Main St")
-            num_leads = st.number_input("Number of Leads", min_value=1, max_value=1000, value=10)
-        
-        # Data sources
-        st.markdown("### 🔍 Data Sources")
-        available_sources = orchestrator.get_available_sources()
-        selected_sources = st.multiselect(
-            "Select data sources",
-            available_sources,
-            default=['Test Scraper'] if 'Test Scraper' in available_sources else available_sources[:1]
-        )
-        
-        # Advanced options
-        with st.expander("⚙️ Advanced Options"):
-            deduplicate = st.checkbox("Remove duplicates", value=True)
-            export_csv = st.checkbox("Export to CSV", value=True)
-            free_sources_only = st.checkbox("Free sources only", value=True)
-        
-        submitted = st.form_submit_button("🚀 Generate Leads", type="primary")
-    
-    if submitted:
-        if not selected_sources:
-            st.error("Please select at least one data source.")
-            return
-        
-        if not city or not country or not niche:
-            st.error("Please fill in City, Country, and Niche fields.")
-            return
-        
-        # Generate leads
-        with st.spinner("Generating leads..."):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            progress_state = {'v': 0.0}
-
-            def progress_callback(message: str):
-                try:
-                    status_text.text(message)
-                    progress_state['v'] = min(1.0, progress_state['v'] + 0.1)
-                    progress_bar.progress(progress_state['v'])
-                except Exception:
-                    pass
-            
-            try:
-                results = orchestrator.generate_leads(
-                    city=city,
-                    country=country,
-                    niche=niche,
-                    business_name=business_name if business_name else None,
-                    address=address if address else None,
-                    limit=num_leads,
-                    sources=selected_sources,
-                    deduplicate=deduplicate,
-                    user_id=st.session_state.user['id'],
-                    progress_callback=progress_callback
-                )
-                
-                progress_bar.progress(1.0)
-                status_text.success("Lead generation completed!")
-                
-                # Display results
-                st.markdown("### 📊 Results Summary")
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    st.metric("Total Found", results.get('total_found', 0))
-                with col2:
-                    st.metric("Duplicates Removed", results.get('duplicates_removed', 0))
-                with col3:
-                    st.metric("Successfully Inserted", results.get('inserted', 0))
-                with col4:
-                    st.metric("Sources Used", len(results.get('sources_used', [])))
-                
-                # Show recent results
-                if results.get('inserted', 0) > 0:
-                    st.markdown("### 📋 Recent Lead Generation Results")
-                    recent_leads = orchestrator.get_lead_stats()
-                    if recent_leads:
-                        st.dataframe(recent_leads, use_container_width=True)
-                
-                # Export option
-                if export_csv and results.get('inserted', 0) > 0:
-                    try:
-                        csv_path = orchestrator.export_leads()
-                        if csv_path and os.path.exists(csv_path):
-                            with open(csv_path, 'rb') as f:
-                                st.download_button(
-                                    label="📥 Download CSV",
-                                    data=f.read(),
-                                    file_name=f"leads_{city}_{country}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                    mime="text/csv"
-                                )
-                    except Exception as _e:
-                        st.warning("CSV export is not available at the moment.")
-                
-            except Exception as e:
-                st.error(f"Error generating leads: {e}")
-                progress_bar.empty()
-                status_text.error("Lead generation failed!")
-    
-    # Lead statistics
-    st.markdown("### 📈 Lead Statistics")
-    try:
-        stats = orchestrator.get_lead_stats()
-        if stats:
-            st.dataframe(stats, use_container_width=True)
-        else:
-            st.info("No leads found in database.")
-    except Exception as e:
-        st.error(f"Error loading lead statistics: {e}")
-    
-    # Export all leads
-    if st.button("📤 Export All Leads to CSV"):
-        try:
-            csv_path = orchestrator.export_leads()
-            if csv_path and os.path.exists(csv_path):
-                with open(csv_path, 'rb') as f:
-                    st.download_button(
-                        label="📥 Download All Leads CSV",
-                        data=f.read(),
-                        file_name=f"all_leads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv"
-                    )
-            else:
-                st.info("No leads to export.")
-        except Exception as e:
-            st.error(f"Error exporting leads: {e}")
 
 # Main pages
 def show_home_page():
@@ -761,7 +886,7 @@ def show_home_page():
     
     st.markdown("---")
     st.markdown("### ⏱️ Real-time Counters")
-    render_realtime_counters(st.session_state.user['id'])
+    render_realtime_counters(st.session_state.user['id'], key="home_realtime_refresh")
 
 def show_login_page():
     """Show login/register page"""
@@ -823,7 +948,7 @@ def show_main_app():
         st.markdown("### 🧭 Navigation")
         current_page = st.selectbox(
             "Select Page",
-            ["Home", "Lead Management", "Email Campaigns", "Analytics", "Settings", "Lead Generation"],
+            ["Home", "Lead Management", "Email Campaigns", "Analytics", "Settings", "Admin"],
             key="page_selector"
         )
         
@@ -840,7 +965,7 @@ def show_main_app():
         
         st.markdown("---")
         st.markdown("### ⏱️ Real-time Counters")
-        render_realtime_counters(st.session_state.user['id'])
+        render_realtime_counters(st.session_state.user['id'], key="sidebar_realtime_refresh")
     
     # Logout button
     if st.button("🚪 Logout", use_container_width=True):
@@ -851,26 +976,386 @@ def show_main_app():
     # Main Content
     if current_page == "Home":
         show_home_page()
-    elif current_page == "Lead Generation":
-        show_lead_generation()
+    
     elif current_page == "Lead Management":
         st.markdown("## 👥 Lead Management")
-        st.info("Lead management features coming soon!")
+        st.markdown("### Filters")
+        colf1, colf2, colf3, colf4 = st.columns(4)
+        with colf1:
+            f_name = st.text_input("Search name", value=st.session_state.get('name_query',''))
+            st.session_state['name_query'] = f_name
+        with colf2:
+            f_city = st.text_input("City filter", value=st.session_state.get('city_filter',''))
+            st.session_state['city_filter'] = f_city
+        with colf3:
+            f_country = st.text_input("Country filter", value=st.session_state.get('country_filter',''))
+            st.session_state['country_filter'] = f_country
+        with colf4:
+            f_tag = st.text_input("Tag filter", value=st.session_state.get('tag_filter',''))
+            st.session_state['tag_filter'] = f_tag
+        st.markdown("### CSV Import")
+        uploaded = st.file_uploader("Upload CSV of leads", type=["csv"], accept_multiple_files=False)
+        if uploaded is not None:
+            try:
+                import pandas as pd
+                df = pd.read_csv(uploaded)
+                required_cols = {"name"}
+                if not required_cols.issubset(set(c.lower() for c in df.columns)):
+                    st.error("CSV must include at least a 'name' column.")
+                else:
+                    # Normalize columns
+                    cols_map = {c: c.lower() for c in df.columns}
+                    df.rename(columns=cols_map, inplace=True)
+                    inserted = 0
+                    for _, row in df.iterrows():
+                        try:
+                            add_lead(
+                                st.session_state.user['id'],
+                                name=str(row.get('name','')).strip(),
+                                email=str(row.get('email','')).strip() if 'email' in df.columns else None,
+                                phone=str(row.get('phone','')).strip() if 'phone' in df.columns else None,
+                                company=str(row.get('company','')).strip() if 'company' in df.columns else None,
+                                title=str(row.get('title','')).strip() if 'title' in df.columns else None,
+                                industry=str(row.get('industry','')).strip() if 'industry' in df.columns else None,
+                                city=str(row.get('city','')).strip() if 'city' in df.columns else None,
+                                country=str(row.get('country','')).strip() if 'country' in df.columns else None,
+                                website=str(row.get('website','')).strip() if 'website' in df.columns else None,
+                                source=str(row.get('source','csv')).strip() if 'source' in df.columns else 'csv'
+                            )
+                            inserted += 1
+                        except Exception:
+                            pass
+                    st.success(f"Imported {inserted} leads from CSV.")
+            except Exception as e:
+                st.error(f"Failed to import CSV: {e}")
+        st.markdown("### Leads")
+        leads = get_filtered_leads(st.session_state.user['id'], name_query=f_name, tag_query=f_tag, city=f_city, country=f_country, limit=200)
+        if leads:
+            import pandas as pd
+            df = pd.DataFrame(leads)
+            # Select for bulk status
+            df['selected'] = False
+            edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, hide_index=True)
+            if st.button("Save Tag Changes"):
+                updated = 0
+                for _, row in edited.iterrows():
+                    try:
+                        update_lead_tags(int(row['id']), str(row.get('tags','')).strip())
+                        updated += 1
+                    except Exception:
+                        pass
+                st.success(f"Saved tags for {updated} leads.")
+            st.markdown("#### Bulk Status Update")
+            new_status = st.selectbox("Set status to", ["new", "contacted", "qualified", "unqualified", "customer"])
+            if st.button("Apply to Selected"):
+                try:
+                    selected_ids = [int(r['id']) for _, r in edited.iterrows() if r.get('selected', False)]
+                    changed = update_lead_status_bulk(st.session_state.user['id'], selected_ids, new_status)
+                    st.success(f"Updated {changed} leads to status '{new_status}'.")
+                except Exception as e:
+                    st.error(f"Failed to update: {e}")
+            # Export filtered
+            if st.button("Export Filtered to CSV"):
+                try:
+                    from io import StringIO
+                    buff = StringIO()
+                    edited.to_csv(buff, index=False)
+                    st.download_button(
+                        label="Download Filtered CSV",
+                        data=buff.getvalue(),
+                        file_name=f"filtered_leads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
+                except Exception as e:
+                    st.error(f"Failed to export: {e}")
+        else:
+            st.info("No leads yet. Upload a CSV to get started.")
     elif current_page == "Email Campaigns":
         st.markdown("## 📧 Email Campaigns")
-        st.info("Email campaign features coming soon!")
+        st.markdown("### Templates")
+        templates = {
+            "Welcome": {
+                "subject": "Welcome to our community!",
+                "content": "<p>Hi {{name}},</p><p>Thanks for joining us!</p>"
+            },
+            "Promotion": {
+                "subject": "Special offer just for you",
+                "content": "<p>Hi {{name}},</p><p>Don't miss our limited-time deal.</p>"
+            },
+            "Follow-up": {
+                "subject": "Following up on our last conversation",
+                "content": "<p>Hi {{name}},</p><p>Just checking in to see if you had any questions.</p>"
+            }
+        }
+        tname = st.selectbox("Choose a template", list(templates.keys()))
+        subject = st.text_input("Subject", value=templates[tname]["subject"]) 
+        content = st.text_area("HTML Content", value=templates[tname]["content"], height=200)
+        st.markdown("### Schedule Preview")
+        schedule_date = st.date_input("Schedule date")
+        schedule_time = st.time_input("Schedule time")
+        if st.button("Save Campaign"):
+            cid = create_campaign(st.session_state.user['id'], tname, subject, content)
+            st.success(f"Campaign saved with ID {cid}.")
+        st.markdown("### Send Test/Bulk Emails")
+        to_email = st.text_input("Test recipient email")
+        if st.button("Send Test Email") and to_email:
+            try:
+                send_email_simulation(to_email, subject, content, st.session_state.user['id'])
+                st.success("Test email sent (or simulated).")
+            except Exception as e:
+                st.error(f"Failed to send: {e}")
+        st.markdown("#### Bulk send to filtered leads")
+        filt_name = st.text_input("Filter name contains (bulk)")
+        bulk = get_filtered_leads(st.session_state.user['id'], name_query=filt_name, limit=200)
+        sel_ids = [l['id'] for l in bulk]
+        st.write(f"Matched {len(sel_ids)} leads.")
+        if st.button("Start Bulk Send"):
+            from time import sleep
+            prog = st.progress(0.0)
+            done = 0
+            total = len(sel_ids)
+            for l in bulk:
+                email = l.get('email','')
+                if email:
+                    try:
+                        send_email_simulation(email, subject, content, st.session_state.user['id'])
+                        # Track send
+                        _insert_email_tracking(0, l['id'], email, 'sent')
+                    except Exception:
+                        pass
+                done += 1
+                prog.progress(min(1.0, done/max(1,total)))
+                sleep(0.05)
+            st.success(f"Bulk process completed for {total} leads.")
+        st.markdown("### Drip Sequences")
+        seq_name = st.text_input("Sequence name")
+        seq_desc = st.text_input("Description")
+        if st.button("Create Sequence") and seq_name:
+            sid = create_sequence(st.session_state.user['id'], seq_name, seq_desc)
+            st.success(f"Sequence created with ID {sid}")
+        # Add steps
+        st.markdown("#### Add Step")
+        try:
+            # reload sequences
+            seqs = get_sequences(st.session_state.user['id'])
+        except Exception:
+            seqs = []
+        if seqs:
+            seq_options = {f"{s['name']} (#{s['id']})": s['id'] for s in seqs}
+            sel_seq_label = st.selectbox("Select sequence", list(seq_options.keys()))
+            sel_seq = seq_options[sel_seq_label]
+            step_order = st.number_input("Order", min_value=1, value=1)
+            delay_days = st.number_input("Delay days", min_value=0, value=0)
+            s_subject = st.text_input("Step subject")
+            s_content = st.text_area("Step content", height=120)
+            if st.button("Add Step") and s_subject and s_content:
+                add_sequence_step(sel_seq, int(step_order), int(delay_days), s_subject, s_content)
+                st.success("Step added.")
+            # Schedule sequence to a segment
+            st.markdown("#### Schedule Sequence to Segment")
+            start_date = st.date_input("Start date")
+            seg_name_query = st.text_input("Segment filter: name contains")
+            seg_tag = st.text_input("Segment filter: tag contains")
+            segment_leads = get_filtered_leads(st.session_state.user['id'], name_query=seg_name_query, tag_query=seg_tag, limit=500)
+            st.write(f"Segment size: {len(segment_leads)}")
+            if st.button("Schedule Sequence"):
+                lead_ids = [l['id'] for l in segment_leads]
+                schedule_sequence_for_leads(st.session_state.user['id'], sel_seq, lead_ids, datetime.now())
+                st.success("Sequence scheduled for selected segment.")
+        st.markdown("### Your Campaigns")
+        st.dataframe(get_campaigns(st.session_state.user['id']), use_container_width=True)
     elif current_page == "Analytics":
         st.markdown("## 📊 Analytics")
-        st.info("Analytics features coming soon!")
+        data = get_analytics(st.session_state.user['id'])
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Emails", data['total_emails'])
+        with col2:
+            st.metric("Sent", data['sent_emails'])
+        with col3:
+            st.metric("Opened", data['opened_emails'])
+        with col4:
+            st.metric("Clicked", data['clicked_emails'])
+        st.markdown("---")
+        st.markdown("### Email Sent Trend (mock)")
+        try:
+            import pandas as pd
+            from datetime import timedelta
+            today = datetime.now().date()
+            days = [today - timedelta(days=i) for i in range(14)]
+            counts = [max(0, data['sent_emails'] // 14 + (i % 3)) for i in range(14)]
+            trend_df = pd.DataFrame({'date': list(reversed(days)), 'sent': list(reversed(counts))})
+            st.line_chart(trend_df.set_index('date'))
+        except Exception:
+            pass
+        st.markdown("### Segmentation")
+        try:
+            # Pull a larger set for segmentation
+            seg = get_leads(st.session_state.user['id'], limit=500)
+            if seg:
+                import pandas as pd
+                sdf = pd.DataFrame(seg)
+                # Status counts
+                status_counts = sdf['status'].value_counts().rename_axis('status').reset_index(name='count')
+                st.bar_chart(status_counts.set_index('status'))
+                # Top tags (split CSV)
+                if 'tags' in sdf.columns:
+                    from collections import Counter
+                    tags_series = sdf['tags'].fillna('').astype(str).tolist()
+                    all_tags = []
+                    for t in tags_series:
+                        all_tags.extend([x.strip() for x in t.split(',') if x.strip()])
+                    top = Counter(all_tags).most_common(10)
+                    if top:
+                        tag_df = pd.DataFrame(top, columns=['tag','count']).set_index('tag')
+                        st.bar_chart(tag_df)
+            else:
+                st.info("Not enough data for segmentation.")
+        except Exception:
+            pass
+        st.markdown("### Leads Summary (Top 50)")
+        leads = get_leads(st.session_state.user['id'], limit=50)
+        if leads:
+            st.dataframe(leads, use_container_width=True)
+        else:
+            st.info("No lead data to display.")
     elif current_page == "Settings":
         st.markdown("## ⚙️ Settings")
-        st.info("Settings features coming soon!")
+        st.markdown("### Suppression List Editor")
+        sup = load_suppression_list(st.session_state.user['id'])
+        sup_text = "\n".join(sorted(sup)) if sup else ""
+        edited = st.text_area("Suppressed emails (one per line)", value=sup_text, height=200)
+        if st.button("Save Suppression List"):
+            path = f"suppression_list_{st.session_state.user['id']}.txt"
+            try:
+                with open(path, 'w') as f:
+                    for line in edited.splitlines():
+                        line = line.strip()
+                        if line:
+                            f.write(line + "\n")
+                st.success("Suppression list saved.")
+            except Exception as e:
+                st.error(f"Failed to save: {e}")
+        st.markdown("### Saved Filters")
+        filters_file = f"saved_filters_{st.session_state.user['id']}.json"
+        def _load_saved_filters():
+            try:
+                if os.path.exists(filters_file):
+                    with open(filters_file, 'r') as f:
+                        return json.load(f)
+            except Exception:
+                return {}
+            return {}
+        def _save_filters(name: str, payload: dict):
+            data = _load_saved_filters()
+            data[name] = payload
+            with open(filters_file, 'w') as f:
+                json.dump(data, f)
+        new_name = st.text_input("Filter name")
+        if st.button("Save current filters"):
+            # reuse latest filters typed in Lead Management by reading session_state if available
+            payload = {
+                'name_query': st.session_state.get('name_query',''),
+                'city': st.session_state.get('city_filter',''),
+                'country': st.session_state.get('country_filter',''),
+                'tag': st.session_state.get('tag_filter',''),
+            }
+            if new_name:
+                try:
+                    _save_filters(new_name, payload)
+                    st.success("Saved filter.")
+                except Exception as e:
+                    st.error(f"Failed to save filter: {e}")
+            else:
+                st.info("Enter a filter name to save.")
+        saved = _load_saved_filters()
+        if saved:
+            pick = st.selectbox("Apply saved filter", list(saved.keys()))
+            if st.button("Apply"):
+                sel = saved.get(pick,{})
+                st.session_state['name_query'] = sel.get('name_query','')
+                st.session_state['city_filter'] = sel.get('city','')
+                st.session_state['country_filter'] = sel.get('country','')
+                st.session_state['tag_filter'] = sel.get('tag','')
+                st.success("Applied. Go to Lead Management to see results.")
+        st.markdown("### Scheduler Heartbeat")
+        enable_sched = st.checkbox("Enable background scheduler heartbeat", value=True)
+        if enable_sched:
+            try:
+                st_autorefresh(interval=15000, key="scheduler_heartbeat")
+            except Exception:
+                pass
+            try:
+                processed = process_scheduled_jobs(max_jobs=50)
+                if processed:
+                    st.info(f"Processed {processed} scheduled jobs.")
+            except Exception:
+                pass
+    elif current_page == "Admin":
+        st.markdown("## 👑 Admin Panel")
+        if st.session_state.user.get('role','user') != 'admin':
+            st.error("Admin access required.")
+        else:
+            st.markdown("### User Management")
+            users = list_users()
+            if users:
+                import pandas as pd
+                udf = pd.DataFrame(users)
+                st.dataframe(udf, use_container_width=True)
+                uid = st.number_input("User ID", min_value=1, step=1)
+                new_role = st.selectbox("New role", ["user", "manager", "admin"])
+                if st.button("Update Role"):
+                    if update_user_role(int(uid), new_role):
+                        st.success("Role updated.")
+                    else:
+                        st.error("Failed to update role.")
+            st.markdown("### Deliverability Tools")
+            b_email = st.text_input("Mark email as bounced/complaint")
+            if st.button("Mark Bounce") and b_email:
+                try:
+                    _suppress_email_for_user(st.session_state.user['id'], b_email)
+                    _mark_email_bounced(b_email)
+                    st.success("Email marked as bounced and suppressed.")
+                except Exception as e:
+                    st.error(f"Failed: {e}")
+            st.markdown("### DKIM/SPF Helper")
+            st.info("Set up SPF: v=spf1 include:_spf.google.com ~all\nSet up DKIM: add TXT record from your email provider.\nUse warm-up pacing: limit sends to small batches per day and increase slowly.")
+            st.markdown("#### DNS Checks (no backend)")
+            d_domain = st.text_input("Domain for SPF/DKIM checks", placeholder="example.com")
+            colc1, colc2 = st.columns(2)
+            with colc1:
+                if st.button("Check SPF") and d_domain:
+                    res = check_spf_record(d_domain)
+                    if res.get('ok'):
+                        st.success(f"SPF: {res.get('spf')}")
+                    else:
+                        st.error(f"SPF not ok: {res.get('error','unknown')}")
+            with colc2:
+                selector = st.text_input("DKIM selector", value="default")
+                if st.button("Check DKIM") and d_domain and selector:
+                    res = check_dkim_record(d_domain, selector)
+                    if res.get('ok'):
+                        st.success(f"DKIM: {res.get('dkim')}")
+                    else:
+                        st.error(f"DKIM not ok: {res.get('error','unknown')}")
+            st.markdown("#### Provider Webhook Simulation")
+            st.caption("Simulate provider events locally without a backend deployment.")
+            ev_type = st.selectbox("Event Type", ["bounce", "complaint", "spam_report"]) 
+            ev_email = st.text_input("Recipient Email")
+            if st.button("Process Simulated Event") and ev_email:
+                outcome = process_webhook_event(st.session_state.user['id'], { 'type': ev_type, 'email': ev_email })
+                st.success(f"Result: {outcome}")
 
 # Main application
 def main():
     """Main application function"""
     # Initialize database
     init_database()
+    # Process due scheduled jobs opportunistically on each run
+    try:
+        process_scheduled_jobs(max_jobs=25)
+    except Exception:
+        pass
     
     # Initialize session state
     if 'authenticated' not in st.session_state:
