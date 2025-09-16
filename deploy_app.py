@@ -1686,6 +1686,30 @@ def show_main_app():
         else:
             filt_name = st.text_input("Filter name contains (bulk)")
             bulk = get_filtered_leads(st.session_state.user['id'], name_query=filt_name, limit=2000)
+        # Category/Tag filter from imported tags
+        try:
+            # Collect distinct tags from current bulk (CSV of tags)
+            tag_set = set()
+            for l in bulk:
+                t = str(l.get('tags','') or '').strip()
+                if t:
+                    for part in t.split(','):
+                        p = part.strip()
+                        if p:
+                            tag_set.add(p)
+            tag_list = sorted(tag_set)
+            selected_tags = st.multiselect("Filter by category/tag", tag_list)
+            if selected_tags:
+                sel = set(selected_tags)
+                filtered_bulk = []
+                for l in bulk:
+                    t = str(l.get('tags','') or '')
+                    parts = [p.strip() for p in t.split(',') if p.strip()]
+                    if any(p in sel for p in parts):
+                        filtered_bulk.append(l)
+                bulk = filtered_bulk
+        except Exception:
+            pass
         # Deduplicate by email
         seen_emails = set()
         deduped = []
