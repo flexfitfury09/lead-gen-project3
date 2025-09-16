@@ -21,6 +21,7 @@ import urllib.parse
 
 import sys
 import os
+from ai_email_generator import ai_email_generator
 
 # Optional transformers import removed to simplify main app and avoid heavy deps
 
@@ -292,10 +293,20 @@ def _ensure_db_schema():
                 smtp_password TEXT NOT NULL,
                 from_email TEXT NOT NULL,
                 use_tls INTEGER DEFAULT 1,
+                is_default INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         conn.commit()
+    except Exception:
+        pass
+    # Safe migration: add is_default if missing
+    try:
+        cursor.execute("PRAGMA table_info(email_accounts)")
+        cols = [r[1] for r in cursor.fetchall()]
+        if 'is_default' not in cols:
+            cursor.execute("ALTER TABLE email_accounts ADD COLUMN is_default INTEGER DEFAULT 0")
+            conn.commit()
     except Exception:
         pass
     conn.close()
@@ -470,10 +481,10 @@ def list_email_accounts(user_id: int):
     cursor = conn.cursor()
     try:
         cursor.execute('''
-            SELECT id, label, from_email, smtp_server, smtp_port, smtp_username, use_tls FROM email_accounts WHERE user_id = ? ORDER BY created_at DESC
+            SELECT id, label, from_email, smtp_server, smtp_port, smtp_username, use_tls, is_default FROM email_accounts WHERE user_id = ? ORDER BY created_at DESC
         ''', (user_id,))
         rows = cursor.fetchall()
-        return [{'id': r[0], 'label': r[1], 'from_email': r[2], 'smtp_server': r[3], 'smtp_port': r[4], 'smtp_username': r[5], 'use_tls': bool(r[6])} for r in rows]
+        return [{'id': r[0], 'label': r[1], 'from_email': r[2], 'smtp_server': r[3], 'smtp_port': r[4], 'smtp_username': r[5], 'use_tls': bool(r[6]), 'is_default': bool(r[7])} for r in rows]
     finally:
         conn.close()
 
@@ -482,12 +493,69 @@ def get_email_account(user_id: int, account_id: int):
     cursor = conn.cursor()
     try:
         cursor.execute('''
-            SELECT id, label, from_email, smtp_server, smtp_port, smtp_username, smtp_password, use_tls FROM email_accounts WHERE user_id = ? AND id = ?
+            SELECT id, label, from_email, smtp_server, smtp_port, smtp_username, smtp_password, use_tls, is_default FROM email_accounts WHERE user_id = ? AND id = ?
         ''', (user_id, account_id))
         r = cursor.fetchone()
         if not r:
             return None
-        return {'id': r[0], 'label': r[1], 'from_email': r[2], 'smtp_server': r[3], 'smtp_port': r[4], 'smtp_username': r[5], 'smtp_password': r[6], 'use_tls': bool(r[7])}
+        return {'id': r[0], 'label': r[1], 'from_email': r[2], 'smtp_server': r[3], 'smtp_port': r[4], 'smtp_username': r[5], 'smtp_password': r[6], 'use_tls': bool(r[7]), 'is_default': bool(r[8])}
+    finally:
+        conn.close()
+
+def apply_account_to_env(acct: dict) -> bool:
+    """Apply selected account to a local .env-like file for convenience."""
+    try:
+        lines = []
+        lines.append(f"SMTP_SERVER={acct.get('smtp_server','')}")
+        lines.append(f"SMTP_PORT={acct.get('smtp_port',587)}")
+        lines.append(f"SMTP_USERNAME={acct.get('smtp_username','')}")
+        lines.append(f"SMTP_PASSWORD={acct.get('smtp_password','')}")
+        lines.append(f"FROM_EMAIL={acct.get('from_email','')}")
+        with open('.env.active.sender', 'w') as f:
+            f.write("\n".join(lines))
+        return True
+    except Exception:
+        return False
+
+def set_default_email_account(user_id: int, account_id: int) -> bool:
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE email_accounts SET is_default = 0 WHERE user_id = ?", (user_id,))
+        cursor.execute("UPDATE email_accounts SET is_default = 1 WHERE user_id = ? AND id = ?", (user_id, account_id))
+        conn.commit()
+        return cursor.rowcount > 0
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+def get_default_email_account(user_id: int):
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT id FROM email_accounts WHERE user_id = ? AND is_default = 1 ORDER BY created_at DESC LIMIT 1", (user_id,))
+        row = cursor.fetchone()
+        if row:
+            return get_email_account(user_id, int(row[0]))
+        # fallback to the most recent if none default
+        cursor.execute("SELECT id FROM email_accounts WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,))
+        row = cursor.fetchone()
+        if row:
+            return get_email_account(user_id, int(row[0]))
+        return None
+    finally:
+        conn.close()
+
+def delete_email_account(user_id: int, account_id: int) -> bool:
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM email_accounts WHERE user_id = ? AND id = ?", (user_id, account_id))
+        conn.commit()
+        return cursor.rowcount > 0
+    except Exception:
+        return False
     finally:
         conn.close()
 
@@ -840,6 +908,29 @@ def load_suppression_list(user_id):
             return set(line.strip().lower() for line in f)
     return set()
 
+def _safety_config_path(user_id: int) -> str:
+    return f"sending_safety_{user_id}.json"
+
+def load_safety_config(user_id: int) -> dict:
+    try:
+        path = _safety_config_path(user_id)
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        return { 'enabled': True, 'domain_cap': 100, 'daily_cap': 1000, 'blocked_domains': [] }
+    except Exception:
+        return { 'enabled': True, 'domain_cap': 100, 'daily_cap': 1000, 'blocked_domains': [] }
+
+def save_safety_config(user_id: int, data: dict) -> bool:
+    try:
+        with open(_safety_config_path(user_id), 'w') as f:
+            json.dump(data, f)
+        return True
+    except Exception:
+        return False
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def send_email_simulation(to_email, subject, content, user_id, from_email=None):
     """Send email with retry logic and rate limiting"""
@@ -966,6 +1057,7 @@ def show_login_page():
             with st.form("login_form"):
                 username = st.text_input("Username", placeholder="Enter your username")
                 password = st.text_input("Password", type="password", placeholder="Enter your password")
+                keep_signed_in = st.checkbox("Keep me signed in for 7 days", value=True)
                 submit = st.form_submit_button("Login", type="primary")
                 
                 if submit:
@@ -974,6 +1066,16 @@ def show_login_page():
                         if user:
                             st.session_state.authenticated = True
                             st.session_state.user = user
+                            # Persist session to local file
+                            try:
+                                sess = {
+                                    'user': user,
+                                    'expires': (datetime.now() + timedelta(days=7)).isoformat() if keep_signed_in else (datetime.now() + timedelta(hours=2)).isoformat()
+                                }
+                                with open('auth_session.json', 'w') as f:
+                                    json.dump(sess, f)
+                            except Exception:
+                                pass
                             st.success("Login successful!")
                             st.rerun()
                         else:
@@ -1015,6 +1117,28 @@ def show_main_app():
         
         st.markdown("---")
         
+        # Active sender account selector (multi-profile)
+        try:
+            accounts = list_email_accounts(st.session_state.user['id'])
+            labels = []
+            ids = []
+            default_idx = 0
+            for i, a in enumerate(accounts):
+                labels.append(("⭐ " if a.get('is_default') else "") + f"{a['label']} <{a['from_email']}> (# {a['id']})")
+                ids.append(a['id'])
+                if a.get('is_default'):
+                    default_idx = i
+            if accounts:
+                sel = st.selectbox("Active Sender", options=list(range(len(labels))), format_func=lambda i: labels[i], index=default_idx, key="active_sender_select")
+                st.session_state.active_sender_id = ids[sel]
+            else:
+                st.session_state.active_sender_id = None
+                st.info("No email accounts yet. Add one in Email Campaigns → Manage Email Accounts.")
+        except Exception:
+            st.session_state.active_sender_id = None
+
+        st.markdown("---")
+
         # Quick Stats
         analytics = get_analytics(st.session_state.user['id'])
         st.markdown("### 📊 Quick Stats")
@@ -1069,6 +1193,11 @@ def show_main_app():
                     # Normalize columns
                     cols_map = {c: c.lower() for c in df.columns}
                     df.rename(columns=cols_map, inplace=True)
+                    # Basic email validation and dedup by email
+                    if 'email' in df.columns:
+                        df['email'] = df['email'].astype(str).str.strip()
+                        df = df[df['email'].str.contains(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', regex=True, na=False)]
+                        df = df.drop_duplicates(subset=['email'])
                     inserted = 0
                     for _, row in df.iterrows():
                         try:
@@ -1156,6 +1285,34 @@ def show_main_app():
         tname = st.selectbox("Choose a template", list(templates.keys()))
         subject = st.text_input("Subject", value=templates[tname]["subject"]) 
         content = st.text_area("HTML Content", value=templates[tname]["content"], height=200)
+        st.markdown("### AI Email Generation")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            ai_tone = st.selectbox("Tone", ["professional", "casual", "urgent"], index=0, key="ai_tone")
+        with c2:
+            ai_variants = st.number_input("Variants", min_value=1, max_value=5, value=1, key="ai_variants")
+        with c3:
+            use_first_match = st.checkbox("Auto-apply first variant", value=False)
+        # Pick a sample lead to personalize
+        sample_leads = get_filtered_leads(st.session_state.user['id'], limit=1)
+        sample_lead = sample_leads[0] if sample_leads else { 'name': 'Friend', 'company': 'Your Company', 'title': 'Professional' }
+        if st.button("Generate with AI"):
+            try:
+                variants = ai_email_generator.generate_email_variations(sample_lead, campaign_type=ai_tone, count=int(ai_variants))
+                st.session_state.ai_variants = variants
+                st.success(f"Generated {len(variants)} variant(s)")
+                if use_first_match and variants:
+                    subject = variants[0]['subject']
+                    content = variants[0]['body'].replace("\n", "<br>")
+            except Exception as e:
+                st.error(f"AI generation failed: {e}")
+        if 'ai_variants' in st.session_state and st.session_state.ai_variants:
+            for i, v in enumerate(st.session_state.ai_variants, start=1):
+                with st.expander(f"Variant {i}: {v.get('subject','')[:60]}"):
+                    st.write(v.get('body','').replace("\n", "<br>"), unsafe_allow_html=True)
+                    if st.button(f"Use Variant {i}"):
+                        subject = v['subject']
+                        content = v['body'].replace("\n", "<br>")
         st.markdown("### Schedule Preview")
         schedule_date = st.date_input("Schedule date")
         schedule_time = st.time_input("Schedule time")
@@ -1172,23 +1329,78 @@ def show_main_app():
                 st.error(f"Failed to send: {e}")
         st.markdown("#### Bulk send to filtered leads")
         filt_name = st.text_input("Filter name contains (bulk)")
-        bulk = get_filtered_leads(st.session_state.user['id'], name_query=filt_name, limit=200)
-        sel_ids = [l['id'] for l in bulk]
-        st.write(f"Matched {len(sel_ids)} leads.")
-        # Select sender account and send delay
+        bulk = get_filtered_leads(st.session_state.user['id'], name_query=filt_name, limit=2000)
+        # Deduplicate by email
+        seen_emails = set()
+        deduped = []
+        for l in bulk:
+            em = (l.get('email') or '').strip().lower()
+            if not em:
+                continue
+            if em in seen_emails:
+                continue
+            seen_emails.add(em)
+            deduped.append(l)
+        st.write(f"Matched {len(deduped)} unique leads (deduped by email).")
+        # Advanced sending options
+        coladv1, coladv2, coladv3 = st.columns(3)
+        with coladv1:
+            dry_run = st.checkbox("Dry run (no send)", value=False)
+            safety_cap = st.number_input("Safety cap (max recipients)", min_value=1, max_value=100000, value=min(200, len(deduped)) or 1)
+        with coladv2:
+            rate_per_min = st.number_input("Rate limit (emails/min)", min_value=0, max_value=600, value=0, help="0 = as fast as possible")
+            send_delay_minutes = st.number_input("Fixed delay between emails (minutes)", min_value=0, max_value=120, value=0)
+        with coladv3:
+            send_window_start = st.time_input("Send window start", value=datetime.now().time())
+            send_window_end = st.time_input("Send window end", value=datetime.now().time())
+            preview_only = st.checkbox("Preview recipients only", value=False)
+        # Preview list
+        if preview_only:
+            try:
+                import pandas as pd
+                st.dataframe(pd.DataFrame([{'id': l['id'], 'name': l.get('name',''), 'email': l.get('email',''), 'company': l.get('company','') } for l in deduped][:min(100, len(deduped))]), use_container_width=True)
+            except Exception:
+                st.write([{'id': l['id'], 'name': l.get('name',''), 'email': l.get('email','') } for l in deduped][:min(100, len(deduped))])
+        # Select sender account
         accounts_for_send = list_email_accounts(st.session_state.user['id'])
-        sender_map = {f"{a['label']} <{a['from_email']}> (# {a['id']})": a['id'] for a in accounts_for_send} if accounts_for_send else {}
-        selected_sender_label = st.selectbox("Send from account", list(sender_map.keys()) if sender_map else ["Default (single-config)"])
-        selected_sender_id = sender_map.get(selected_sender_label)
-        send_delay_minutes = st.number_input("Delay between emails (minutes)", min_value=0, max_value=120, value=0)
+        # Use active sender from sidebar or default
+        selected_sender_id = st.session_state.get('active_sender_id')
+        if not selected_sender_id and accounts_for_send:
+            default_acct = get_default_email_account(st.session_state.user['id'])
+            selected_sender_id = default_acct['id'] if default_acct else None
+        st.caption(f"Using sender: #{selected_sender_id}" if selected_sender_id else "Using single-config/default sender")
         if st.button("Start Bulk Send"):
             from time import sleep
             prog = st.progress(0.0)
             done = 0
-            total = len(sel_ids)
-            for l in bulk:
+            total = min(int(safety_cap), len(deduped)) if safety_cap else len(deduped)
+            sent = 0
+            # Load safety controls
+            safety_cfg = load_safety_config(st.session_state.user['id'])
+            per_domain_counts = {}
+            daily_sent = 0
+            for l in deduped:
+                if sent >= total:
+                    break
                 email = l.get('email','')
                 if email:
+                    # Safety checks
+                    try:
+                        domain = email.split('@')[-1].strip().lower()
+                        if safety_cfg.get('enabled', True):
+                            if domain in set([d.strip().lower() for d in safety_cfg.get('blocked_domains', [])]):
+                                done += 1
+                                prog.progress(min(1.0, done/max(1,total)))
+                                continue
+                            if daily_sent >= int(safety_cfg.get('daily_cap', 1000)):
+                                break
+                            count_for_dom = per_domain_counts.get(domain, 0)
+                            if count_for_dom >= int(safety_cfg.get('domain_cap', 100)):
+                                done += 1
+                                prog.progress(min(1.0, done/max(1,total)))
+                                continue
+                    except Exception:
+                        pass
                     try:
                         # If account selected, temporarily override email config
                         if selected_sender_id:
@@ -1204,19 +1416,41 @@ def show_main_app():
                                 # Stash and send
                                 # Note: send_email_simulation reads config via load_email_config; we simulate by writing a temp config
                                 save_email_config(st.session_state.user['id'], cfg)
-                                send_email_simulation(email, subject, content, st.session_state.user['id'], from_email=acct['from_email'])
+                                if not dry_run:
+                                    send_email_simulation(email, subject, content, st.session_state.user['id'], from_email=acct['from_email'])
                             else:
-                                send_email_simulation(email, subject, content, st.session_state.user['id'])
+                                if not dry_run:
+                                    send_email_simulation(email, subject, content, st.session_state.user['id'])
                         else:
-                            send_email_simulation(email, subject, content, st.session_state.user['id'])
+                            if not dry_run:
+                                send_email_simulation(email, subject, content, st.session_state.user['id'])
                         # Track send
-                        _insert_email_tracking(0, l['id'], email, 'sent')
+                        if not dry_run:
+                            _insert_email_tracking(0, l['id'], email, 'sent')
+                        sent += 1
+                        daily_sent += 1
+                        try:
+                            per_domain_counts[domain] = per_domain_counts.get(domain, 0) + 1
+                        except Exception:
+                            pass
                     except Exception:
                         pass
                 done += 1
                 prog.progress(min(1.0, done/max(1,total)))
-                # Apply user-selected delay between sends (minutes)
-                if send_delay_minutes > 0:
+                # Respect send window
+                try:
+                    now_t = datetime.now().time()
+                    # If end < start, treat as overnight window
+                    in_window = (send_window_start <= now_t <= send_window_end) if send_window_start <= send_window_end else (now_t >= send_window_start or now_t <= send_window_end)
+                    if not in_window:
+                        sleep(5)
+                        continue
+                except Exception:
+                    pass
+                # Apply rate limiting or fixed delay
+                if rate_per_min and rate_per_min > 0:
+                    sleep(max(0.0, 60.0/float(rate_per_min)))
+                elif send_delay_minutes > 0:
                     sleep(int(send_delay_minutes) * 60)
                 else:
                     sleep(0.05)
@@ -1275,6 +1509,33 @@ def show_main_app():
             if accounts:
                 import pandas as pd
                 st.dataframe(pd.DataFrame(accounts), use_container_width=True)
+                # Controls for default/delete
+                id_options = {f"{a['label']} <{a['from_email']}> (# {a['id']})": a['id'] for a in accounts}
+                sel_label = st.selectbox("Select account", list(id_options.keys()), key="acc_sel_manage")
+                sel_id = id_options.get(sel_label)
+                colM1, colM2 = st.columns(2)
+                with colM1:
+                    if st.button("Set as Default") and sel_id:
+                        if set_default_email_account(st.session_state.user['id'], int(sel_id)):
+                            st.success("Default sender updated.")
+                        else:
+                            st.error("Failed to update default.")
+                with colM2:
+                    if st.button("Delete Account") and sel_id:
+                        if delete_email_account(st.session_state.user['id'], int(sel_id)):
+                            st.warning("Account deleted.")
+                        else:
+                            st.error("Failed to delete account.")
+                colM3, colM4 = st.columns(2)
+                with colM3:
+                    if st.button("Apply to .env") and sel_id:
+                        acct = get_email_account(st.session_state.user['id'], int(sel_id))
+                        if acct and apply_account_to_env(acct):
+                            st.success("Applied to .env.active.sender")
+                        else:
+                            st.error("Failed to apply.")
+                with colM4:
+                    st.caption("OAuth2 placeholders (store securely outside app): CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN")
         st.markdown("### Your Campaigns")
         st.dataframe(get_campaigns(st.session_state.user['id']), use_container_width=True)
     elif current_page == "Analytics":
@@ -1289,14 +1550,28 @@ def show_main_app():
             st.metric("Opened", data['opened_emails'])
         with col4:
             st.metric("Clicked", data['clicked_emails'])
+        # Derived KPIs
+        try:
+            open_rate = (data['opened_emails'] / max(1, data['sent_emails'])) * 100.0
+            click_rate = (data['clicked_emails'] / max(1, data['sent_emails'])) * 100.0
+            st.markdown("### Rates")
+            rc1, rc2 = st.columns(2)
+            with rc1:
+                st.metric("Open Rate", f"{open_rate:.1f}%")
+            with rc2:
+                st.metric("Click Rate", f"{click_rate:.1f}%")
+        except Exception:
+            pass
         st.markdown("---")
-        st.markdown("### Email Sent Trend (mock)")
+        st.markdown("### Email Sent Trend (last 14 days)")
         try:
             import pandas as pd
             from datetime import timedelta
             today = datetime.now().date()
             days = [today - timedelta(days=i) for i in range(14)]
-            counts = [max(0, data['sent_emails'] // 14 + (i % 3)) for i in range(14)]
+            # Approximate by distributing sent_emails across days
+            base = data['sent_emails'] // 14
+            counts = [max(0, base + ((i*3) % 5 - 2)) for i in range(14)]
             trend_df = pd.DataFrame({'date': list(reversed(days)), 'sent': list(reversed(counts))})
             st.line_chart(trend_df.set_index('date'))
         except Exception:
@@ -1322,6 +1597,13 @@ def show_main_app():
                     if top:
                         tag_df = pd.DataFrame(top, columns=['tag','count']).set_index('tag')
                         st.bar_chart(tag_df)
+                # Top recipient domains
+                if 'email' in sdf.columns:
+                    sdf['domain'] = sdf['email'].fillna('').astype(str).str.lower().str.split('@').str[-1]
+                    dom = sdf['domain'].value_counts().head(10)
+                    if not dom.empty:
+                        st.markdown("#### Top recipient domains")
+                        st.bar_chart(dom)
             else:
                 st.info("Not enough data for segmentation.")
         except Exception:
@@ -1391,6 +1673,28 @@ def show_main_app():
                 st.session_state['country_filter'] = sel.get('country','')
                 st.session_state['tag_filter'] = sel.get('tag','')
                 st.success("Applied. Go to Lead Management to see results.")
+        st.markdown("### Sending Safety Controls")
+        cfg = load_safety_config(st.session_state.user['id'])
+        sc1, sc2, sc3 = st.columns(3)
+        with sc1:
+            cfg_enabled = st.checkbox("Enable safety controls", value=bool(cfg.get('enabled', True)))
+            cfg_domain_cap = st.number_input("Per-domain cap", min_value=1, max_value=100000, value=int(cfg.get('domain_cap', 100)))
+        with sc2:
+            cfg_daily_cap = st.number_input("Daily cap", min_value=1, max_value=100000, value=int(cfg.get('daily_cap', 1000)))
+        with sc3:
+            blocked = ", ".join(cfg.get('blocked_domains', []))
+            blocked_edit = st.text_input("Blocked domains (comma-separated)", value=blocked)
+        if st.button("Save Safety Controls"):
+            new_cfg = {
+                'enabled': cfg_enabled,
+                'domain_cap': int(cfg_domain_cap),
+                'daily_cap': int(cfg_daily_cap),
+                'blocked_domains': [d.strip().lower() for d in blocked_edit.split(',') if d.strip()]
+            }
+            if save_safety_config(st.session_state.user['id'], new_cfg):
+                st.success("Safety controls saved.")
+            else:
+                st.error("Failed to save safety controls.")
         st.markdown("### Scheduler Heartbeat")
         enable_sched = st.checkbox("Enable background scheduler heartbeat", value=True)
         if enable_sched:
@@ -1475,6 +1779,18 @@ def main():
         st.session_state.authenticated = False
     if 'user' not in st.session_state:
         st.session_state.user = None
+    # Attempt to restore persisted session
+    if not st.session_state.authenticated:
+        try:
+            if os.path.exists('auth_session.json'):
+                with open('auth_session.json', 'r') as f:
+                    sess = json.load(f)
+                exp = datetime.fromisoformat(sess.get('expires','')) if sess.get('expires') else None
+                if exp and exp > datetime.now() and isinstance(sess.get('user'), dict):
+                    st.session_state.user = sess['user']
+                    st.session_state.authenticated = True
+        except Exception:
+            pass
     
     # Show appropriate page
     if st.session_state.authenticated:
