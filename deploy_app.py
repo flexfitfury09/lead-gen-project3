@@ -430,16 +430,16 @@ def process_webhook_event(user_id: int, event: dict):
         return f"suppressed:{etype}"
     return 'processed'
 
-def authenticate_user(username, password):
-    """Authenticate user login"""
+def authenticate_user(username_or_email, password):
+    """Authenticate user login by username or email"""
     conn = sqlite3.connect('lead_gen.db')
     cursor = conn.cursor()
     
     password_hash = hash_password(password)
     cursor.execute('''
         SELECT id, username, email, role FROM users
-        WHERE username = ? AND password_hash = ?
-    ''', (username, password_hash))
+        WHERE (username = ? OR email = ?) AND password_hash = ?
+    ''', (username_or_email, username_or_email, password_hash))
     
     user = cursor.fetchone()
     conn.close()
@@ -1049,50 +1049,41 @@ def show_home_page():
     render_realtime_counters(st.session_state.user['id'], key="home_realtime_refresh")
 
 def show_login_page():
-    """Show login/register page"""
+    """Show login page (admin-managed users)"""
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
         st.markdown("""
             <div class="dashboard-card">
-                <h2 style="text-align: center; margin-bottom: 2rem;">🔐 Authentication</h2>
+                <h2 style="text-align: center; margin-bottom: 2rem;">🔐 Login</h2>
             </div>
         """, unsafe_allow_html=True)
-    
-        tab1, tab2 = st.tabs(["Login", "Register"])
-        
-        with tab1:
-            with st.form("login_form"):
-                username = st.text_input("Username", placeholder="Enter your username")
-                password = st.text_input("Password", type="password", placeholder="Enter your password")
-                keep_signed_in = st.checkbox("Keep me signed in for 7 days", value=True)
-                submit = st.form_submit_button("Login", type="primary")
-                
-                if submit:
-                    if username and password:
-                        user = authenticate_user(username, password)
-                        if user:
-                            st.session_state.authenticated = True
-                            st.session_state.user = user
-                            # Persist session to local file
-                            try:
-                                sess = {
-                                    'user': user,
-                                    'expires': (datetime.now() + timedelta(days=7)).isoformat() if keep_signed_in else (datetime.now() + timedelta(hours=2)).isoformat()
-                                }
-                                with open('auth_session.json', 'w') as f:
-                                    json.dump(sess, f)
-                            except Exception:
-                                pass
-                            st.success("Login successful!")
-                            st.rerun()
-                        else:
-                            st.error("Invalid username or password")
+        with st.form("login_form"):
+            username = st.text_input("Username or Email", placeholder="Enter your username or email")
+            password = st.text_input("Password", type="password", placeholder="Enter your password")
+            keep_signed_in = st.checkbox("Keep me signed in for 7 days", value=True)
+            submit = st.form_submit_button("Login", type="primary")
+            if submit:
+                if username and password:
+                    user = authenticate_user(username, password)
+                    if user:
+                        st.session_state.authenticated = True
+                        st.session_state.user = user
+                        try:
+                            sess = {
+                                'user': user,
+                                'expires': (datetime.now() + timedelta(days=7)).isoformat() if keep_signed_in else (datetime.now() + timedelta(hours=2)).isoformat()
+                            }
+                            with open('auth_session.json', 'w') as f:
+                                json.dump(sess, f)
+                        except Exception:
+                            pass
+                        st.success("Login successful!")
+                        st.rerun()
                     else:
-                        st.error("Please fill in all fields")
-        
-        with tab2:
-            st.info("Only the admin can register new users. Please contact your administrator.")
+                        st.error("Invalid credentials")
+                else:
+                    st.error("Please fill in all fields")
 
 def show_main_app():
     """Show main application after authentication"""
