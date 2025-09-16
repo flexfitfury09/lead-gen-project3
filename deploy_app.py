@@ -1678,7 +1678,10 @@ def show_main_app():
             am_pm = st.selectbox("AM/PM", options=["AM", "PM"], key="schedule_ampm")
         
         # Convert to datetime.time object
-        hour_24 = hour if am_pm == "AM" and hour != 12 else (0 if am_pm == "AM" and hour == 12 else (hour + 12 if hour != 12 else 12))
+        if am_pm == "AM":
+            hour_24 = 0 if hour == 12 else hour
+        else:  # PM
+            hour_24 = 12 if hour == 12 else hour + 12
         schedule_time = datetime.time(hour=hour_24, minute=minute)
         if st.button("Save Campaign"):
             cid = create_campaign(st.session_state.user['id'], tname, subject, content)
@@ -1752,7 +1755,10 @@ def show_main_app():
                 start_am_pm = st.selectbox("Start AM/PM", options=["AM", "PM"], key="window_start_ampm")
             
             # Convert to datetime.time
-            start_hour_24 = start_hour if start_am_pm == "AM" and start_hour != 12 else (0 if start_am_pm == "AM" and start_hour == 12 else (start_hour + 12 if start_hour != 12 else 12))
+            if start_am_pm == "AM":
+                start_hour_24 = 0 if start_hour == 12 else start_hour
+            else:  # PM
+                start_hour_24 = 12 if start_hour == 12 else start_hour + 12
             send_window_start = datetime.time(hour=start_hour_24, minute=start_minute)
             
             # Window end with 12-hour format
@@ -1765,7 +1771,10 @@ def show_main_app():
                 end_am_pm = st.selectbox("End AM/PM", options=["AM", "PM"], key="window_end_ampm")
             
             # Convert to datetime.time
-            end_hour_24 = end_hour if end_am_pm == "AM" and end_hour != 12 else (0 if end_am_pm == "AM" and end_hour == 12 else (end_hour + 12 if end_hour != 12 else 12))
+            if end_am_pm == "AM":
+                end_hour_24 = 0 if end_hour == 12 else end_hour
+            else:  # PM
+                end_hour_24 = 12 if end_hour == 12 else end_hour + 12
             send_window_end = datetime.time(hour=end_hour_24, minute=end_minute)
             preview_only = st.checkbox("Preview recipients only", value=False)
         # Preview list
@@ -1793,7 +1802,10 @@ def show_main_app():
                     sched_am_pm = st.selectbox("Schedule AM/PM", options=["AM", "PM"], key="sched_ampm")
                 
                 # Convert to datetime.time
-                sched_hour_24 = sched_hour if sched_am_pm == "AM" and sched_hour != 12 else (0 if sched_am_pm == "AM" and sched_hour == 12 else (sched_hour + 12 if sched_hour != 12 else 12))
+                if sched_am_pm == "AM":
+                    sched_hour_24 = 0 if sched_hour == 12 else sched_hour
+                else:  # PM
+                    sched_hour_24 = 12 if sched_hour == 12 else sched_hour + 12
                 stime = datetime.time(hour=sched_hour_24, minute=sched_minute)
                 from datetime import datetime as _dt
                 sched_datetime = _dt.combine(sd, stime)
