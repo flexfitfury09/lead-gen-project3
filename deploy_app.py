@@ -1319,46 +1319,85 @@ def show_main_app():
             uploaded_sm = st.file_uploader("Upload CSV/XLSX of leads", type=["csv","xlsx","xls"], accept_multiple_files=False, key="leads_csv_simple")
             if uploaded_sm is not None and not st.session_state.csv_import_done:
                 try:
-                    import pandas as pd
+                    import pandas as pd, re
                     name_lower = (uploaded_sm.name or "").lower()
                     if name_lower.endswith((".xlsx",".xls")):
                         df = pd.read_excel(uploaded_sm)
                     else:
                         df = pd.read_csv(uploaded_sm)
-                    required_cols = {"name"}
-                    if not required_cols.issubset(set(c.lower() for c in df.columns)):
-                        st.error("File must include at least a 'name' column.")
-                    else:
-                        cols_map = {c: c.lower() for c in df.columns}
-                        df.rename(columns=cols_map, inplace=True)
+                    # Normalize/alias headers
+                    def _norm(h):
+                        base = re.sub(r"\s+", "", str(h)).strip().lower()
+                        base = base.replace("-", "").replace("_", "")
+                        if base in ("fullname", "namefull", "contactname"): return "name"
+                        if base in ("emailaddress", "mail", "emailid"): return "email"
+                        if base == "mobile": return "phone"
+                        return base
+                    cols_map = {c: _norm(c) for c in df.columns}
+                    df.rename(columns=cols_map, inplace=True)
+                    raw_rows = len(df)
+                    # Trim common fields
+                    for col in [c for c in ["name","email","phone","company","title","industry","city","country","website","source","tags"] if c in df.columns]:
+                        df[col] = df[col].astype(str).str.strip()
+                    # Email validation and dedupe (non-empty only)
+                    invalid_removed = 0
+                    dup_removed = 0
+                    if 'email' in df.columns:
+                        before = len(df)
+                        valid_mask = df['email'].eq("") | df['email'].str.contains(r'^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$', regex=True, na=False)
+                        invalid_removed = int(before - valid_mask.sum())
+                        df = df[valid_mask]
+                        # Drop duplicates where email not empty
+                        non_empty = df['email'].ne("")
+                        before_dup = len(df)
+                        df = pd.concat([df[~non_empty], df[non_empty].drop_duplicates(subset=['email'])])
+                        dup_removed = int(before_dup - len(df))
+                    # Auto-fill missing name from email prefix if possible
+                    if 'name' not in df.columns:
+                        df['name'] = ""
+                    if 'email' in df.columns:
+                        need_name = df['name'].eq("") & df['email'].ne("")
+                        df.loc[need_name, 'name'] = df.loc[need_name, 'email'].str.split('@').str[0].str.replace('.', ' ', regex=False).str.replace('_',' ', regex=False).str.title()
+                    # Drop rows still without name and email
+                    before_drop = len(df)
+                    df = df[~(df.get('name','').astype(str).str.strip().eq("") & (df.get('email','').astype(str).str.strip().eq("") if 'email' in df.columns else True))]
+                    empty_removed = int(before_drop - len(df))
+
+                    # Analysis summary
+                    st.markdown("### Import Summary")
+                    c1,c2,c3,c4 = st.columns(4)
+                    with c1: st.metric("Rows loaded", raw_rows)
+                    with c2: st.metric("Invalid emails removed", invalid_removed)
+                    with c3: st.metric("Duplicates removed", dup_removed)
+                    with c4: st.metric("Empty name/email removed", empty_removed)
+                    # Domain breakdown
+                    try:
                         if 'email' in df.columns:
-                            df['email'] = df['email'].astype(str).str.strip()
-                            # Keep rows where email is empty OR matches regex
-                            valid_mask = df['email'].eq("") | df['email'].str.contains(r'^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$', regex=True, na=False)
-                            df = df[valid_mask]
-                            # Deduplicate only non-empty emails
-                            if not df.empty:
-                                non_empty = df['email'].ne("")
-                                df.loc[non_empty, 'email'] = df.loc[non_empty, 'email']
-                                df = df.drop_duplicates(subset=['email'])
-                        user_category = st.text_input("Category/tag to assign", value="imported")
+                            dom = df['email'].astype(str).str.lower().str.split('@').str[-1]
+                            dom = dom[dom.ne("")].value_counts().head(10)
+                            if not dom.empty:
+                                st.markdown("#### Top recipient domains")
+                                st.bar_chart(dom)
+                    except Exception:
+                        pass
+                    # Preview
+                    st.markdown("#### Preview (first 50)")
+                    try:
+                        st.dataframe(df.head(50), use_container_width=True)
+                    except Exception:
+                        pass
+                    user_category = st.text_input("Category/tag to assign", value="imported")
+                    if st.button(f"Import {len(df)} cleaned leads"):
                         inserted = 0
                         for _, row in df.iterrows():
                             try:
-                                # Derive name if missing using email prefix
                                 name_val = str(row.get('name','')).strip()
                                 email_val = str(row.get('email','')).strip() if 'email' in df.columns else None
-                                if (not name_val) and email_val:
-                                    try:
-                                        prefix = email_val.split('@')[0]
-                                        name_val = prefix.replace('.', ' ').replace('_', ' ').title()
-                                    except Exception:
-                                        name_val = prefix
-                                if not name_val:
-                                    continue  # skip rows without a valid name
+                                if not name_val and not email_val:
+                                    continue
                                 lid = add_lead(
                                     st.session_state.user['id'],
-                                    name=name_val,
+                                    name=name_val or email_val or "Lead",
                                     email=email_val,
                                     phone=str(row.get('phone','')).strip() if 'phone' in df.columns else None,
                                     company=str(row.get('company','')).strip() if 'company' in df.columns else None,
@@ -1382,7 +1421,7 @@ def show_main_app():
                             st.success(f"Imported {inserted} leads.")
                             st.session_state.csv_import_done = True
                         else:
-                            st.warning("Imported 0 leads. Check that your file has a non-empty 'name' or 'email' column.")
+                            st.warning("Imported 0 leads. Check that your file has valid rows after cleaning.")
                 except Exception as e:
                     st.error(f"Failed to import: {e}")
             if st.button("Reset Import State"):
