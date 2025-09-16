@@ -1887,8 +1887,8 @@ def show_main_app():
                         daily_sent += 1
                         try:
                             per_domain_counts[domain] = per_domain_counts.get(domain, 0) + 1
-                    except Exception:
-                        pass
+                        except Exception:
+                            pass
                     except Exception:
                         errors += 1
                 else:
