@@ -1278,6 +1278,59 @@ def show_main_app():
             st.info("No leads yet. Upload a CSV to get started.")
     elif current_page == "Email Campaigns":
         st.markdown("## 📧 Email Campaigns")
+        # Always show quick lead import
+        with st.expander("Import Leads (CSV/XLSX)", expanded=False):
+            if 'csv_import_done' not in st.session_state:
+                st.session_state.csv_import_done = False
+            uploaded_sm = st.file_uploader("Upload CSV/XLSX of leads", type=["csv","xlsx","xls"], accept_multiple_files=False, key="leads_csv_simple")
+            if uploaded_sm is not None and not st.session_state.csv_import_done:
+                try:
+                    import pandas as pd
+                    name_lower = (uploaded_sm.name or "").lower()
+                    if name_lower.endswith((".xlsx",".xls")):
+                        df = pd.read_excel(uploaded_sm)
+                    else:
+                        df = pd.read_csv(uploaded_sm)
+                    required_cols = {"name"}
+                    if not required_cols.issubset(set(c.lower() for c in df.columns)):
+                        st.error("File must include at least a 'name' column.")
+                    else:
+                        cols_map = {c: c.lower() for c in df.columns}
+                        df.rename(columns=cols_map, inplace=True)
+                        if 'email' in df.columns:
+                            df['email'] = df['email'].astype(str).str.strip()
+                            df = df[df['email'].str.contains(r'^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$', regex=True, na=False)]
+                            df = df.drop_duplicates(subset=['email'])
+                        user_category = st.text_input("Category/tag to assign", value="imported")
+                        inserted = 0
+                        for _, row in df.iterrows():
+                            try:
+                                lid = add_lead(
+                                    st.session_state.user['id'],
+                                    name=str(row.get('name','')).strip(),
+                                    email=str(row.get('email','')).strip() if 'email' in df.columns else None,
+                                    phone=str(row.get('phone','')).strip() if 'phone' in df.columns else None,
+                                    company=str(row.get('company','')).strip() if 'company' in df.columns else None,
+                                    title=str(row.get('title','')).strip() if 'title' in df.columns else None,
+                                    industry=str(row.get('industry','')).strip() if 'industry' in df.columns else None,
+                                    city=str(row.get('city','')).strip() if 'city' in df.columns else None,
+                                    country=str(row.get('country','')).strip() if 'country' in df.columns else None,
+                                    website=str(row.get('website','')).strip() if 'website' in df.columns else None,
+                                    source=str(row.get('source','csv')).strip() if 'source' in df.columns else 'csv'
+                                )
+                                try:
+                                    prev = str(row.get('tags','')).strip() if 'tags' in df.columns else ''
+                                    new_tags = (prev + ("," if prev and user_category else "") + user_category).strip(',') if user_category else prev
+                                    update_lead_tags(int(lid), new_tags)
+                                except Exception:
+                                    pass
+                                inserted += 1
+                            except Exception:
+                                pass
+                        st.success(f"Imported {inserted} leads.")
+                        st.session_state.csv_import_done = True
+                except Exception as e:
+                    st.error(f"Failed to import: {e}")
         st.markdown("### Templates")
         templates = {
             "Welcome": {
