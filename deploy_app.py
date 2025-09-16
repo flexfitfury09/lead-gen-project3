@@ -1333,8 +1333,14 @@ def show_main_app():
                         df.rename(columns=cols_map, inplace=True)
                         if 'email' in df.columns:
                             df['email'] = df['email'].astype(str).str.strip()
-                            df = df[df['email'].str.contains(r'^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$', regex=True, na=False)]
-                            df = df.drop_duplicates(subset=['email'])
+                            # Keep rows where email is empty OR matches regex
+                            valid_mask = df['email'].eq("") | df['email'].str.contains(r'^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$', regex=True, na=False)
+                            df = df[valid_mask]
+                            # Deduplicate only non-empty emails
+                            if not df.empty:
+                                non_empty = df['email'].ne("")
+                                df.loc[non_empty, 'email'] = df.loc[non_empty, 'email']
+                                df = df.drop_duplicates(subset=['email'])
                         user_category = st.text_input("Category/tag to assign", value="imported")
                         inserted = 0
                         for _, row in df.iterrows():
@@ -1372,10 +1378,15 @@ def show_main_app():
                                 inserted += 1
                             except Exception:
                                 pass
-                        st.success(f"Imported {inserted} leads.")
-                        st.session_state.csv_import_done = True
+                        if inserted > 0:
+                            st.success(f"Imported {inserted} leads.")
+                            st.session_state.csv_import_done = True
+                        else:
+                            st.warning("Imported 0 leads. Check that your file has a non-empty 'name' or 'email' column.")
                 except Exception as e:
                     st.error(f"Failed to import: {e}")
+            if st.button("Reset Import State"):
+                st.session_state.csv_import_done = False
         st.markdown("### Templates")
         templates = {
             "Welcome": {
