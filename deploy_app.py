@@ -52,6 +52,94 @@ except Exception:
                 return out
         ai_email_generator = _FallbackAIEmailGenerator()
 
+def render_template(text: str, lead: dict) -> str:
+    """Render simple placeholders like {{name}}, {{company}}, {{title}}, {{industry}}, {{email}} in the given text."""
+    if not isinstance(text, str):
+        return text
+
+def generate_email_from_prompt(prompt_text: str, lead: dict) -> dict:
+    """Generate a persuasive subject and body from a freeform prompt and lead context.
+    Works offline without external APIs.
+    """
+    try:
+        prompt = (prompt_text or "").strip()
+        name = str(lead.get("name", "there")) or "there"
+        company = str(lead.get("company", ""))
+        title = str(lead.get("title", ""))
+        # Simple subject synthesis
+        if len(prompt) > 80:
+            short = prompt[:77] + "…"
+        else:
+            short = prompt
+        subj = f"Quick idea to improve your {company or 'website'}" if 'web' in prompt.lower() else f"Let's talk about {short or 'a quick opportunity'}"
+        if 'design' in prompt.lower():
+            subj = f"{company or 'Your brand'} — design refresh that drives results"
+        if 'seo' in prompt.lower():
+            subj = f"{company or 'Your site'} — SEO gains we can unlock"
+        # Body synthesis
+        lines = []
+        lines.append(f"Hi {name},")
+        lines.append("")
+        if company:
+            lines.append(f"I looked at {company} and saw room to drive measurable improvements.")
+        else:
+            lines.append("I reviewed your online presence and saw room to drive measurable improvements.")
+        lines.append("")
+        # Value props based on intent words
+        lower = prompt.lower()
+        bullets = []
+        if 'web' in lower or 'site' in lower or 'developer' in lower:
+            bullets += [
+                "Faster pages and clearer conversion paths",
+                "Modern, responsive UI with accessibility best practices",
+                "Analytics-driven A/B experiments to lift signups and sales",
+            ]
+        if 'design' in lower:
+            bullets += [
+                "Brand-consistent visuals that communicate value instantly",
+                "High-impact hero and above-the-fold structure",
+                "Trust signals and social proof woven into the layout",
+            ]
+        if 'seo' in lower:
+            bullets += [
+                "Technical fixes (Core Web Vitals, schema, sitemaps)",
+                "Content plan targeting revenue keywords",
+                "Internal linking and on-page improvements",
+            ]
+        if not bullets:
+            bullets = [
+                "Quick wins that improve conversions",
+                "Polish that elevates credibility",
+                "Clear next steps to go live fast",
+            ]
+        lines.append("Here are a few quick wins I can deliver:")
+        for b in bullets[:3]:
+            lines.append(f"- {b}")
+        lines.append("")
+        ask = "Would you be open to a 15-minute call this week to walk through a tailored plan?"
+        lines.append(ask)
+        lines.append("")
+        lines.append("Best regards,")
+        lines.append("LeadAI Pro")
+        body = "\n".join(lines)
+        return { 'subject': subj, 'body': body }
+    except Exception:
+        return { 'subject': 'Quick idea for you', 'body': f"Hi {lead.get('name','there')},\n\nI have a quick improvement plan I'd love to share.\n\nBest,\nLeadAI Pro" }
+    try:
+        replacements = {
+            "{{name}}": str(lead.get("name", "")),
+            "{{company}}": str(lead.get("company", "")),
+            "{{title}}": str(lead.get("title", "")),
+            "{{industry}}": str(lead.get("industry", "")),
+            "{{email}}": str(lead.get("email", "")),
+        }
+        out = text
+        for k, v in replacements.items():
+            out = out.replace(k, v)
+        return out
+    except Exception:
+        return text
+
 # Optional transformers import removed to simplify main app and avoid heavy deps
 
 # Page configuration
@@ -1495,6 +1583,19 @@ def show_main_app():
             ai_variants = st.number_input("Variants", min_value=1, max_value=5, value=1, key="ai_variants_count")
         with c3:
             use_first_match = st.checkbox("Auto-apply first variant", value=False)
+        st.markdown("#### Prompt-to-email (freeform)")
+        prompt_text = st.text_area("Describe your offering and goal (e.g., 'I’m a web developer; propose a redesign to improve conversions')", height=120)
+        if st.button("Generate from prompt") and (prompt_text or "").strip():
+            try:
+                # Use first available lead to personalize a bit
+                pl = get_leads(st.session_state.user['id'], limit=1)
+                ctx = pl[0] if pl else { 'name': 'there', 'company': '', 'title': '' }
+                gen = generate_email_from_prompt(prompt_text, ctx)
+                subject = gen['subject']
+                content = gen['body'].replace("\n", "<br>")
+                st.success("Generated from prompt.")
+            except Exception as e:
+                st.error(f"Prompt generation failed: {e}")
         # Pick a sample lead to personalize (define before using in buttons)
         sample_leads = get_leads(st.session_state.user['id'], limit=1)
         sample_lead = sample_leads[0] if sample_leads else { 'name': 'Friend', 'company': 'Your Company', 'title': 'Professional' }
