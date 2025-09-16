@@ -1682,7 +1682,7 @@ def show_main_app():
             hour_24 = 0 if hour == 12 else hour
         else:  # PM
             hour_24 = 12 if hour == 12 else hour + 12
-        schedule_time = datetime.time(hour=hour_24, minute=minute)
+        schedule_time = time(hour=hour_24, minute=minute)
         if st.button("Save Campaign"):
             cid = create_campaign(st.session_state.user['id'], tname, subject, content)
             st.success(f"Campaign saved with ID {cid}.")
@@ -1759,7 +1759,7 @@ def show_main_app():
                 start_hour_24 = 0 if start_hour == 12 else start_hour
             else:  # PM
                 start_hour_24 = 12 if start_hour == 12 else start_hour + 12
-            send_window_start = datetime.time(hour=start_hour_24, minute=start_minute)
+            send_window_start = time(hour=start_hour_24, minute=start_minute)
             
             # Window end with 12-hour format
             col_we1, col_we2, col_we3 = st.columns(3)
@@ -1775,7 +1775,7 @@ def show_main_app():
                 end_hour_24 = 0 if end_hour == 12 else end_hour
             else:  # PM
                 end_hour_24 = 12 if end_hour == 12 else end_hour + 12
-            send_window_end = datetime.time(hour=end_hour_24, minute=end_minute)
+            send_window_end = time(hour=end_hour_24, minute=end_minute)
             preview_only = st.checkbox("Preview recipients only", value=False)
         # Preview list
         if preview_only:
@@ -1806,7 +1806,7 @@ def show_main_app():
                     sched_hour_24 = 0 if sched_hour == 12 else sched_hour
                 else:  # PM
                     sched_hour_24 = 12 if sched_hour == 12 else sched_hour + 12
-                stime = datetime.time(hour=sched_hour_24, minute=sched_minute)
+                stime = time(hour=sched_hour_24, minute=sched_minute)
                 from datetime import datetime as _dt
                 sched_datetime = _dt.combine(sd, stime)
         else:
