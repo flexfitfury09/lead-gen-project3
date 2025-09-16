@@ -589,6 +589,31 @@ def load_email_config(user_id):
             return json.load(f)
     return None
 
+# User email templates (per-user stored locally)
+def _templates_path(user_id: int) -> str:
+    return f"email_templates_{user_id}.json"
+
+def load_user_templates(user_id: int) -> dict:
+    try:
+        path = _templates_path(user_id)
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        return {}
+    except Exception:
+        return {}
+
+def save_user_template(user_id: int, name: str, subject: str, content: str) -> bool:
+    try:
+        data = load_user_templates(user_id)
+        data[name] = { 'subject': subject, 'content': content }
+        with open(_templates_path(user_id), 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
 def add_email_account(user_id: int, label: str, server: str, port: int, username: str, password: str, from_email: str, use_tls: bool = True) -> int:
     conn = sqlite3.connect('lead_gen.db')
     cursor = conn.cursor()
@@ -1572,9 +1597,20 @@ def show_main_app():
                 "content": "<p>Hi {{name}},</p><p>Just checking in to see if you had any questions.</p>"
             }
         }
-        tname = st.selectbox("Choose a template", list(templates.keys()))
-        subject = st.text_input("Subject", value=templates[tname]["subject"]) 
-        content = st.text_area("HTML Content", value=templates[tname]["content"], height=200)
+        # Built-ins + user templates
+        user_t = load_user_templates(st.session_state.user['id'])
+        combined = { **templates, **user_t }
+        tname = st.selectbox("Choose a template", list(combined.keys()))
+        subject = st.text_input("Subject", value=combined[tname]["subject"]) 
+        content = st.text_area("HTML Content", value=combined[tname]["content"], height=200)
+        # Save current as user template
+        st.markdown("#### Save current as template")
+        new_t_name = st.text_input("Template name")
+        if st.button("Save Template") and new_t_name:
+            if save_user_template(st.session_state.user['id'], new_t_name, subject, content):
+                st.success("Template saved")
+            else:
+                st.error("Failed to save template")
         st.markdown("### AI Email Generation")
         c1, c2, c3 = st.columns(3)
         with c1:
