@@ -1321,8 +1321,9 @@ def show_main_app():
                     content = variants[0]['body'].replace("\n", "<br>")
             except Exception as e:
                 st.error(f"AI generation failed: {e}")
-        if 'ai_variants' in st.session_state and st.session_state.ai_variants:
-            for i, v in enumerate(st.session_state.ai_variants, start=1):
+        variants_to_show = st.session_state.get('ai_variants') if isinstance(st.session_state.get('ai_variants'), list) else []
+        if variants_to_show:
+            for i, v in enumerate(variants_to_show, start=1):
                 with st.expander(f"Variant {i}: {v.get('subject','')[:60]}"):
                     st.write(v.get('body','').replace("\n", "<br>"), unsafe_allow_html=True)
                     if st.button(f"Use Variant {i}"):
@@ -1394,6 +1395,10 @@ def show_main_app():
             safety_cfg = load_safety_config(st.session_state.user['id'])
             per_domain_counts = {}
             daily_sent = 0
+            skipped_blocked = 0
+            skipped_domain_cap = 0
+            skipped_no_email = 0
+            errors = 0
             for l in deduped:
                 if sent >= total:
                     break
@@ -1404,6 +1409,7 @@ def show_main_app():
                         domain = email.split('@')[-1].strip().lower()
                         if safety_cfg.get('enabled', True):
                             if domain in set([d.strip().lower() for d in safety_cfg.get('blocked_domains', [])]):
+                                skipped_blocked += 1
                                 done += 1
                                 prog.progress(min(1.0, done/max(1,total)))
                                 continue
@@ -1411,6 +1417,7 @@ def show_main_app():
                                 break
                             count_for_dom = per_domain_counts.get(domain, 0)
                             if count_for_dom >= int(safety_cfg.get('domain_cap', 100)):
+                                skipped_domain_cap += 1
                                 done += 1
                                 prog.progress(min(1.0, done/max(1,total)))
                                 continue
@@ -1449,14 +1456,20 @@ def show_main_app():
                         except Exception:
                             pass
                     except Exception:
-                        pass
+                        errors += 1
+                else:
+                    skipped_no_email += 1
                 done += 1
                 prog.progress(min(1.0, done/max(1,total)))
                 # Respect send window
                 try:
                     now_t = datetime.now().time()
+                    # If start == end, treat as always allowed (no window restriction)
+                    if send_window_start == send_window_end:
+                        in_window = True
                     # If end < start, treat as overnight window
-                    in_window = (send_window_start <= now_t <= send_window_end) if send_window_start <= send_window_end else (now_t >= send_window_start or now_t <= send_window_end)
+                    else:
+                        in_window = (send_window_start <= now_t <= send_window_end) if send_window_start <= send_window_end else (now_t >= send_window_start or now_t <= send_window_end)
                     if not in_window:
                         sleep(5)
                         continue
@@ -1470,6 +1483,7 @@ def show_main_app():
                 else:
                     sleep(0.05)
             st.success(f"Bulk process completed for {total} leads.")
+            st.info(f"Sent: {sent}, Blocked: {skipped_blocked}, Domain-cap Skips: {skipped_domain_cap}, Missing email: {skipped_no_email}, Errors: {errors}")
         st.markdown("### Drip Sequences")
         seq_name = st.text_input("Sequence name")
         seq_desc = st.text_input("Description")
