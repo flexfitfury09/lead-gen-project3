@@ -435,10 +435,11 @@ def authenticate_user(username_or_email, password):
     conn = sqlite3.connect('lead_gen.db')
     cursor = conn.cursor()
     
+    username_or_email = (username_or_email or '').strip()
     password_hash = hash_password(password)
     cursor.execute('''
         SELECT id, username, email, role FROM users
-        WHERE (username = ? OR email = ?) AND password_hash = ?
+        WHERE ((username = ?) OR (LOWER(email) = LOWER(?))) AND password_hash = ?
     ''', (username_or_email, username_or_email, password_hash))
     
     user = cursor.fetchone()
@@ -451,6 +452,24 @@ def authenticate_user(username_or_email, password):
             'email': user[2],
             'role': user[3]
         }
+    # If not found, ensure admin exists and try once more
+    try:
+        ensure_admin_exists()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, username, email, role FROM users
+            WHERE ((username = ?) OR (LOWER(email) = LOWER(?))) AND password_hash = ?
+        ''', (username_or_email, username_or_email, password_hash))
+        user = cursor.fetchone()
+        if user:
+            return {
+                'id': user[0],
+                'username': user[1],
+                'email': user[2],
+                'role': user[3]
+            }
+    except Exception:
+        pass
     return None
 
 # Email configuration functions
