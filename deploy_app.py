@@ -1124,11 +1124,18 @@ def show_main_app():
     # Sidebar Navigation
     with st.sidebar:
         st.markdown("### 🧭 Navigation")
-        current_page = st.selectbox(
-            "Select Page",
-            ["Home", "Lead Management", "Email Campaigns", "Analytics", "Settings", "Admin"],
-            key="page_selector"
-        )
+        if st.session_state.simple_mode:
+            current_page = st.selectbox(
+                "Select Page",
+                ["Home", "Email Campaigns", "Settings"],
+                key="page_selector"
+            )
+        else:
+            current_page = st.selectbox(
+                "Select Page",
+                ["Home", "Lead Management", "Email Campaigns", "Analytics", "Settings", "Admin"],
+                key="page_selector"
+            )
         
         st.markdown("---")
         
@@ -1164,8 +1171,9 @@ def show_main_app():
             st.metric("Campaigns", analytics['campaign_count'])
         
         st.markdown("---")
-        st.markdown("### ⏱️ Real-time Counters")
-        render_realtime_counters(st.session_state.user['id'], key="sidebar_realtime_refresh")
+        if not st.session_state.simple_mode:
+            st.markdown("### ⏱️ Real-time Counters")
+            render_realtime_counters(st.session_state.user['id'], key="sidebar_realtime_refresh")
     
     # Logout button
     if st.button("🚪 Logout", use_container_width=True):
@@ -1177,7 +1185,7 @@ def show_main_app():
     if current_page == "Home":
         show_home_page()
     
-    elif current_page == "Lead Management":
+    elif current_page == "Lead Management" and not st.session_state.simple_mode:
         st.markdown("## 👥 Lead Management")
         st.markdown("### Filters")
         colf1, colf2, colf3, colf4 = st.columns(4)
@@ -1344,8 +1352,11 @@ def show_main_app():
             except Exception as e:
                 st.error(f"Failed to send: {e}")
         st.markdown("#### Bulk send to filtered leads")
-        filt_name = st.text_input("Filter name contains (bulk)")
-        bulk = get_filtered_leads(st.session_state.user['id'], name_query=filt_name, limit=2000)
+        if st.session_state.simple_mode:
+            bulk = get_leads(st.session_state.user['id'], limit=1000)
+        else:
+            filt_name = st.text_input("Filter name contains (bulk)")
+            bulk = get_filtered_leads(st.session_state.user['id'], name_query=filt_name, limit=2000)
         # Deduplicate by email
         seen_emails = set()
         deduped = []
@@ -1361,14 +1372,14 @@ def show_main_app():
         # Advanced sending options
         coladv1, coladv2, coladv3 = st.columns(3)
         with coladv1:
-            dry_run = st.checkbox("Dry run (no send)", value=False)
-            safety_cap = st.number_input("Safety cap (max recipients)", min_value=1, max_value=100000, value=min(200, len(deduped)) or 1)
+            dry_run = st.checkbox("Dry run (no send)", value=True)
+            safety_cap = st.number_input("Safety cap (max recipients)", min_value=1, max_value=100000, value=min(50, len(deduped)) or 1)
         with coladv2:
-            rate_per_min = st.number_input("Rate limit (emails/min)", min_value=0, max_value=600, value=0, help="0 = as fast as possible")
-            send_delay_minutes = st.number_input("Fixed delay between emails (minutes)", min_value=0, max_value=120, value=0)
+            rate_per_min = st.number_input("Rate limit (emails/min)", min_value=0, max_value=600, value=30, help="0 = as fast as possible")
+            send_delay_minutes = st.number_input("Fixed delay (min)", min_value=0, max_value=120, value=0)
         with coladv3:
-            send_window_start = st.time_input("Send window start", value=datetime.now().time())
-            send_window_end = st.time_input("Send window end", value=datetime.now().time())
+            send_window_start = st.time_input("Window start", value=datetime.now().time())
+            send_window_end = st.time_input("Window end", value=datetime.now().time())
             preview_only = st.checkbox("Preview recipients only", value=False)
         # Preview list
         if preview_only:
@@ -1567,7 +1578,7 @@ def show_main_app():
                     st.caption("OAuth2 placeholders (store securely outside app): CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN")
         st.markdown("### Your Campaigns")
         st.dataframe(get_campaigns(st.session_state.user['id']), use_container_width=True)
-    elif current_page == "Analytics":
+    elif current_page == "Analytics" and not st.session_state.simple_mode:
         st.markdown("## 📊 Analytics")
         data = get_analytics(st.session_state.user['id'])
         col1, col2, col3, col4 = st.columns(4)
@@ -1808,6 +1819,8 @@ def main():
         st.session_state.authenticated = False
     if 'user' not in st.session_state:
         st.session_state.user = None
+    if 'simple_mode' not in st.session_state:
+        st.session_state.simple_mode = True
     # Attempt to restore persisted session
     if not st.session_state.authenticated:
         try:
