@@ -387,7 +387,7 @@ def _ensure_db_schema():
         cols = [r[1] for r in cursor.fetchall()]
         if 'is_default' not in cols:
             cursor.execute("ALTER TABLE email_accounts ADD COLUMN is_default INTEGER DEFAULT 0")
-            conn.commit()
+        conn.commit()
     except Exception:
         pass
     conn.close()
@@ -435,7 +435,7 @@ def update_user_role(user_id: int, role: str):
             cursor.execute("UPDATE users SET role = 'user' WHERE role = 'admin' AND id != ?", (user_id,))
             cursor.execute('UPDATE users SET role = ? WHERE id = ?', (role, user_id))
         else:
-            cursor.execute('UPDATE users SET role = ? WHERE id = ?', (role, user_id))
+        cursor.execute('UPDATE users SET role = ? WHERE id = ?', (role, user_id))
         conn.commit()
         return True
     except Exception:
@@ -1204,17 +1204,17 @@ def show_login_page():
                 <h2 style="text-align: center; margin-bottom: 2rem;">🔐 Login</h2>
             </div>
         """, unsafe_allow_html=True)
-        with st.form("login_form"):
+            with st.form("login_form"):
             username = st.text_input("Username or Email", placeholder="Enter your username or email")
-            password = st.text_input("Password", type="password", placeholder="Enter your password")
+                password = st.text_input("Password", type="password", placeholder="Enter your password")
             keep_signed_in = st.checkbox("Keep me signed in for 7 days", value=True)
-            submit = st.form_submit_button("Login", type="primary")
-            if submit:
-                if username and password:
-                    user = authenticate_user(username, password)
-                    if user:
-                        st.session_state.authenticated = True
-                        st.session_state.user = user
+                submit = st.form_submit_button("Login", type="primary")
+                if submit:
+                    if username and password:
+                        user = authenticate_user(username, password)
+                        if user:
+                            st.session_state.authenticated = True
+                            st.session_state.user = user
                         try:
                             sess = {
                                 'user': user,
@@ -1224,12 +1224,12 @@ def show_login_page():
                                 json.dump(sess, f)
                         except Exception:
                             pass
-                        st.success("Login successful!")
-                        st.rerun()
-                    else:
+                            st.success("Login successful!")
+                            st.rerun()
+                        else:
                         st.error("Invalid credentials")
-                else:
-                    st.error("Please fill in all fields")
+                    else:
+                        st.error("Please fill in all fields")
 
 def show_main_app():
     """Show main application after authentication"""
@@ -1243,11 +1243,11 @@ def show_main_app():
                 key="page_selector"
             )
         else:
-            current_page = st.selectbox(
-                "Select Page",
-                ["Home", "Lead Management", "Email Campaigns", "Analytics", "Settings", "Admin"],
-                key="page_selector"
-            )
+        current_page = st.selectbox(
+            "Select Page",
+            ["Home", "Lead Management", "Email Campaigns", "Analytics", "Settings", "Admin"],
+            key="page_selector"
+        )
         
         st.markdown("---")
         
@@ -1270,9 +1270,9 @@ def show_main_app():
                 st.info("No email accounts yet. Add one in Email Campaigns → Manage Email Accounts.")
         except Exception:
             st.session_state.active_sender_id = None
-
+        
         st.markdown("---")
-
+        
         # Quick Stats
         analytics = get_analytics(st.session_state.user['id'])
         st.markdown("### 📊 Quick Stats")
@@ -1284,8 +1284,8 @@ def show_main_app():
         
         st.markdown("---")
         if not st.session_state.simple_mode:
-            st.markdown("### ⏱️ Real-time Counters")
-            render_realtime_counters(st.session_state.user['id'], key="sidebar_realtime_refresh")
+        st.markdown("### ⏱️ Real-time Counters")
+        render_realtime_counters(st.session_state.user['id'], key="sidebar_realtime_refresh")
     
     # Logout button
     if st.button("🚪 Logout", use_container_width=True):
@@ -1337,7 +1337,7 @@ def show_main_app():
                 if name_lower.endswith(('.xlsx','.xls')):
                     df = pd.read_excel(uploaded)
                 else:
-                    df = pd.read_csv(uploaded)
+                df = pd.read_csv(uploaded)
                 required_cols = {"name"}
                 if not required_cols.issubset(set(c.lower() for c in df.columns)):
                     st.error("CSV must include at least a 'name' column.")
@@ -1668,7 +1668,18 @@ def show_main_app():
                         content = v['body'].replace("\n", "<br>")
         st.markdown("### Schedule Preview")
         schedule_date = st.date_input("Schedule date")
-        schedule_time = st.time_input("Schedule time")
+        # Use a selectbox for hours (12-hour format) and minutes with AM/PM
+        col_time1, col_time2, col_time3 = st.columns(3)
+        with col_time1:
+            hour = st.selectbox("Hour", options=list(range(1, 13)), key="schedule_hour")
+        with col_time2:
+            minute = st.selectbox("Minute", options=list(range(0, 60)), format_func=lambda x: f"{x:02d}", key="schedule_minute")
+        with col_time3:
+            am_pm = st.selectbox("AM/PM", options=["AM", "PM"], key="schedule_ampm")
+        
+        # Convert to datetime.time object
+        hour_24 = hour if am_pm == "AM" and hour != 12 else (0 if am_pm == "AM" and hour == 12 else (hour + 12 if hour != 12 else 12))
+        schedule_time = datetime.time(hour=hour_24, minute=minute)
         if st.button("Save Campaign"):
             cid = create_campaign(st.session_state.user['id'], tname, subject, content)
             st.success(f"Campaign saved with ID {cid}.")
@@ -1684,7 +1695,7 @@ def show_main_app():
         if st.session_state.simple_mode:
             bulk = get_leads(st.session_state.user['id'], limit=1000)
         else:
-            filt_name = st.text_input("Filter name contains (bulk)")
+        filt_name = st.text_input("Filter name contains (bulk)")
             bulk = get_filtered_leads(st.session_state.user['id'], name_query=filt_name, limit=2000)
         # Category/Tag filter from imported tags
         try:
@@ -1731,8 +1742,31 @@ def show_main_app():
             rate_per_min = st.number_input("Rate limit (emails/min)", min_value=0, max_value=600, value=30, help="0 = as fast as possible")
             send_delay_minutes = st.number_input("Fixed delay (min)", min_value=0, max_value=120, value=0)
         with coladv3:
-            send_window_start = st.time_input("Window start", value=datetime.now().time())
-            send_window_end = st.time_input("Window end", value=datetime.now().time())
+            # Window start with 12-hour format
+            col_ws1, col_ws2, col_ws3 = st.columns(3)
+            with col_ws1:
+                start_hour = st.selectbox("Start hour", options=list(range(1, 13)), key="window_start_hour")
+            with col_ws2:
+                start_minute = st.selectbox("Start minute", options=list(range(0, 60)), format_func=lambda x: f"{x:02d}", key="window_start_minute")
+            with col_ws3:
+                start_am_pm = st.selectbox("Start AM/PM", options=["AM", "PM"], key="window_start_ampm")
+            
+            # Convert to datetime.time
+            start_hour_24 = start_hour if start_am_pm == "AM" and start_hour != 12 else (0 if start_am_pm == "AM" and start_hour == 12 else (start_hour + 12 if start_hour != 12 else 12))
+            send_window_start = datetime.time(hour=start_hour_24, minute=start_minute)
+            
+            # Window end with 12-hour format
+            col_we1, col_we2, col_we3 = st.columns(3)
+            with col_we1:
+                end_hour = st.selectbox("End hour", options=list(range(1, 13)), key="window_end_hour")
+            with col_we2:
+                end_minute = st.selectbox("End minute", options=list(range(0, 60)), format_func=lambda x: f"{x:02d}", key="window_end_minute")
+            with col_we3:
+                end_am_pm = st.selectbox("End AM/PM", options=["AM", "PM"], key="window_end_ampm")
+            
+            # Convert to datetime.time
+            end_hour_24 = end_hour if end_am_pm == "AM" and end_hour != 12 else (0 if end_am_pm == "AM" and end_hour == 12 else (end_hour + 12 if end_hour != 12 else 12))
+            send_window_end = datetime.time(hour=end_hour_24, minute=end_minute)
             preview_only = st.checkbox("Preview recipients only", value=False)
         # Preview list
         if preview_only:
@@ -1749,7 +1783,18 @@ def show_main_app():
                 sched_datetime = st.datetime_input("Start at", value=datetime.now())
             else:
                 sd = st.date_input("Start date", value=datetime.now().date())
-                stime = st.time_input("Start time", value=datetime.now().time())
+                # 12-hour time input for scheduled start
+                col_st1, col_st2, col_st3 = st.columns(3)
+                with col_st1:
+                    sched_hour = st.selectbox("Schedule hour", options=list(range(1, 13)), key="sched_hour")
+                with col_st2:
+                    sched_minute = st.selectbox("Schedule minute", options=list(range(0, 60)), format_func=lambda x: f"{x:02d}", key="sched_minute")
+                with col_st3:
+                    sched_am_pm = st.selectbox("Schedule AM/PM", options=["AM", "PM"], key="sched_ampm")
+                
+                # Convert to datetime.time
+                sched_hour_24 = sched_hour if sched_am_pm == "AM" and sched_hour != 12 else (0 if sched_am_pm == "AM" and sched_hour == 12 else (sched_hour + 12 if sched_hour != 12 else 12))
+                stime = datetime.time(hour=sched_hour_24, minute=sched_minute)
                 from datetime import datetime as _dt
                 sched_datetime = _dt.combine(sd, stime)
         else:
@@ -1828,22 +1873,22 @@ def show_main_app():
                                 # Note: send_email_simulation reads config via load_email_config; we simulate by writing a temp config
                                 save_email_config(st.session_state.user['id'], cfg)
                                 if not dry_run:
-                                    send_email_simulation(email, subject, content, st.session_state.user['id'], from_email=acct['from_email'])
+                                send_email_simulation(email, subject, content, st.session_state.user['id'], from_email=acct['from_email'])
                             else:
                                 if not dry_run:
-                                    send_email_simulation(email, subject, content, st.session_state.user['id'])
+                                send_email_simulation(email, subject, content, st.session_state.user['id'])
                         else:
                             if not dry_run:
-                                send_email_simulation(email, subject, content, st.session_state.user['id'])
+                            send_email_simulation(email, subject, content, st.session_state.user['id'])
                         # Track send
                         if not dry_run:
-                            _insert_email_tracking(0, l['id'], email, 'sent')
+                        _insert_email_tracking(0, l['id'], email, 'sent')
                         sent += 1
                         daily_sent += 1
                         try:
                             per_domain_counts[domain] = per_domain_counts.get(domain, 0) + 1
-                        except Exception:
-                            pass
+                    except Exception:
+                        pass
                     except Exception:
                         errors += 1
                 else:
