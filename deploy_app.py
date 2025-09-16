@@ -1152,6 +1152,19 @@ def show_main_app():
     
     # Logout button
     if st.button("🚪 Logout", use_container_width=True):
+        try:
+            # Clear persisted session file if present
+            if os.path.exists('auth_session.json'):
+                os.remove('auth_session.json')
+        except Exception:
+            pass
+        # Clear session state
+        for key in [
+            'authenticated', 'user', 'active_sender_id', 'ai_variants', 'ai_subjects',
+            'csv_import_done', 'name_query', 'city_filter', 'country_filter', 'tag_filter'
+        ]:
+            if key in st.session_state:
+                del st.session_state[key]
         st.session_state.authenticated = False
         st.session_state.user = None
         st.rerun()
