@@ -1391,7 +1391,17 @@ def show_main_app():
                 st.write([{'id': l['id'], 'name': l.get('name',''), 'email': l.get('email','') } for l in deduped][:min(100, len(deduped))])
         # Simple schedule start time
         sched_enable = st.checkbox("Schedule start time", value=False)
-        sched_datetime = st.datetime_input("Start at", value=datetime.now(), disabled=not sched_enable)
+        # Compatible datetime input across Streamlit versions
+        if sched_enable:
+            if hasattr(st, "datetime_input"):
+                sched_datetime = st.datetime_input("Start at", value=datetime.now())
+            else:
+                sd = st.date_input("Start date", value=datetime.now().date())
+                stime = st.time_input("Start time", value=datetime.now().time())
+                from datetime import datetime as _dt
+                sched_datetime = _dt.combine(sd, stime)
+        else:
+            sched_datetime = None
         # Sender rotation
         accounts_for_send = list_email_accounts(st.session_state.user['id'])
         selected_sender_id = st.session_state.get('active_sender_id')
