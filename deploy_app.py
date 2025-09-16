@@ -1335,6 +1335,21 @@ def show_main_app():
                         return base
                     cols_map = {c: _norm(c) for c in df.columns}
                     df.rename(columns=cols_map, inplace=True)
+                    # Infer email column if missing by scanning columns containing '@'
+                    if 'email' not in df.columns:
+                        try:
+                            candidate = None
+                            best_hits = 0
+                            for c in df.columns:
+                                series = df[c].astype(str)
+                                hits = series.str.contains('@', na=False).sum()
+                                if hits > best_hits:
+                                    best_hits = hits
+                                    candidate = c
+                            if candidate and best_hits > 0 and candidate != 'name':
+                                df['email'] = df[candidate].astype(str)
+                        except Exception:
+                            pass
                     raw_rows = len(df)
                     # Trim common fields
                     for col in [c for c in ["name","email","phone","company","title","industry","city","country","website","source","tags"] if c in df.columns]:
@@ -1343,8 +1358,22 @@ def show_main_app():
                     invalid_removed = 0
                     dup_removed = 0
                     if 'email' in df.columns:
+                        # Normalize email values: strip wrappers like 'mailto:', '<...>' and extract first email
+                        try:
+                            df['email'] = df['email'].astype(str).str.strip()
+                            df['email'] = df['email'].str.replace('mailto:', '', case=False, regex=False)
+                            # Extract email using regex if embedded in text
+                            import re as _re
+                            email_pat = _re.compile(r'([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})', _re.IGNORECASE)
+                            def _extract_email(v: str) -> str:
+                                m = email_pat.search(v or '')
+                                return (m.group(1) if m else v).strip().strip('<>')
+                            df['email'] = df['email'].map(_extract_email)
+                        except Exception:
+                            pass
                         before = len(df)
-                        valid_mask = df['email'].eq("") | df['email'].str.contains(r'^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$', regex=True, na=False)
+                        # Validate emails (or allow empty); case-insensitive
+                        valid_mask = df['email'].eq("") | df['email'].str.match(r'^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$', case=False, na=False)
                         invalid_removed = int(before - valid_mask.sum())
                         df = df[valid_mask]
                         # Drop duplicates where email not empty
