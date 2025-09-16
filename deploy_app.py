@@ -1228,10 +1228,21 @@ def show_main_app():
                     inserted = 0
                     for _, row in df.iterrows():
                         try:
+                            # Derive name if missing using email prefix
+                            name_val = str(row.get('name','')).strip()
+                            email_val = str(row.get('email','')).strip() if 'email' in df.columns else None
+                            if (not name_val) and email_val:
+                                try:
+                                    prefix = email_val.split('@')[0]
+                                    name_val = prefix.replace('.', ' ').replace('_', ' ').title()
+                                except Exception:
+                                    name_val = prefix
+                            if not name_val:
+                                continue  # skip rows without a valid name
                             lid = add_lead(
                                 st.session_state.user['id'],
-                                name=str(row.get('name','')).strip(),
-                                email=str(row.get('email','')).strip() if 'email' in df.columns else None,
+                                name=name_val,
+                                email=email_val,
                                 phone=str(row.get('phone','')).strip() if 'phone' in df.columns else None,
                                 company=str(row.get('company','')).strip() if 'company' in df.columns else None,
                                 title=str(row.get('title','')).strip() if 'title' in df.columns else None,
@@ -1328,10 +1339,21 @@ def show_main_app():
                         inserted = 0
                         for _, row in df.iterrows():
                             try:
+                                # Derive name if missing using email prefix
+                                name_val = str(row.get('name','')).strip()
+                                email_val = str(row.get('email','')).strip() if 'email' in df.columns else None
+                                if (not name_val) and email_val:
+                                    try:
+                                        prefix = email_val.split('@')[0]
+                                        name_val = prefix.replace('.', ' ').replace('_', ' ').title()
+                                    except Exception:
+                                        name_val = prefix
+                                if not name_val:
+                                    continue  # skip rows without a valid name
                                 lid = add_lead(
                                     st.session_state.user['id'],
-                                    name=str(row.get('name','')).strip(),
-                                    email=str(row.get('email','')).strip() if 'email' in df.columns else None,
+                                    name=name_val,
+                                    email=email_val,
                                     phone=str(row.get('phone','')).strip() if 'phone' in df.columns else None,
                                     company=str(row.get('company','')).strip() if 'company' in df.columns else None,
                                     title=str(row.get('title','')).strip() if 'title' in df.columns else None,
