@@ -257,43 +257,7 @@ def _ensure_db_schema():
         pass
 
     # Drip sequences schema
-    try:
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS sequences (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                description TEXT DEFAULT '',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS sequence_steps (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sequence_id INTEGER NOT NULL,
-                step_order INTEGER NOT NULL,
-                delay_days INTEGER NOT NULL,
-                subject TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (sequence_id) REFERENCES sequences(id)
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS scheduled_jobs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                lead_id INTEGER NOT NULL,
-                sequence_id INTEGER NOT NULL,
-                step_id INTEGER NOT NULL,
-                scheduled_at TIMESTAMP NOT NULL,
-                status TEXT DEFAULT 'scheduled',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        conn.commit()
-    except Exception:
-        pass
+    # Sequences removed for simplicity
 
     # Email accounts schema (for multi-sender support)
     try:
@@ -364,11 +328,38 @@ def update_user_role(user_id: int, role: str):
     conn = sqlite3.connect('lead_gen.db')
     cursor = conn.cursor()
     try:
-        cursor.execute('UPDATE users SET role = ? WHERE id = ?', (role, user_id))
+        if role == 'admin':
+            # Ensure only one admin exists at a time
+            cursor.execute("UPDATE users SET role = 'user' WHERE role = 'admin' AND id != ?", (user_id,))
+            cursor.execute('UPDATE users SET role = ? WHERE id = ?', (role, user_id))
+        else:
+            cursor.execute('UPDATE users SET role = ? WHERE id = ?', (role, user_id))
         conn.commit()
         return True
     except Exception:
         return False
+    finally:
+        conn.close()
+
+def ensure_admin_exists():
+    """Ensure a single admin account exists. Create from env on first run if missing."""
+    conn = sqlite3.connect('lead_gen.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT id FROM users WHERE role = 'admin' LIMIT 1")
+        row = cursor.fetchone()
+        if row:
+            return
+        # Create default admin from environment or defaults
+        admin_username = os.getenv('ADMIN_USERNAME', 'admin')
+        admin_email = os.getenv('ADMIN_EMAIL', 'admin@example.com')
+        admin_password = os.getenv('ADMIN_PASSWORD', 'admin123')
+        password_hash = hash_password(admin_password)
+        try:
+            cursor.execute("INSERT INTO users (username, email, password_hash, role) VALUES (?,?,?, 'admin')", (admin_username, admin_email, password_hash))
+            conn.commit()
+        except Exception:
+            pass
     finally:
         conn.close()
 
@@ -576,7 +567,7 @@ def delete_email_account(user_id: int, account_id: int) -> bool:
 
 # Lead management functions
 def add_lead(user_id, name, email, phone=None, company=None, title=None, industry=None, city=None, country=None, website=None, source='manual'):
-    """Add a new lead"""
+    """Add a new lead and return its ID"""
     conn = sqlite3.connect('lead_gen.db')
     cursor = conn.cursor()
     
@@ -585,8 +576,10 @@ def add_lead(user_id, name, email, phone=None, company=None, title=None, industr
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (user_id, name, email, phone, company, title, industry, city, country, website, source))
     
+    new_id = cursor.lastrowid
     conn.commit()
     conn.close()
+    return new_id
 
 def update_lead_status_bulk(user_id: int, lead_ids: list, new_status: str):
     """Bulk update status for selected leads belonging to the user."""
@@ -1099,25 +1092,7 @@ def show_login_page():
                         st.error("Please fill in all fields")
         
         with tab2:
-            with st.form("register_form"):
-                new_username = st.text_input("Username", placeholder="Choose a username", key="reg_username")
-                new_email = st.text_input("Email", placeholder="Enter your email", key="reg_email")
-                new_password = st.text_input("Password", type="password", placeholder="Choose a password", key="reg_password")
-                confirm_password = st.text_input("Confirm Password", type="password", placeholder="Confirm your password", key="reg_confirm")
-                role = st.selectbox("Role", ["User", "Admin"], key="reg_role")
-                submit_reg = st.form_submit_button("Register", type="primary")
-                
-                if submit_reg:
-                    if new_username and new_email and new_password and confirm_password:
-                        if new_password == confirm_password:
-                            if register_user(new_username, new_email, new_password, role.lower()):
-                                st.success("Registration successful! Please login.")
-                            else:
-                                st.error("Username or email already exists")
-                        else:
-                            st.error("Passwords do not match")
-                    else:
-                        st.error("Please fill in all fields")
+            st.info("Only the admin can register new users. Please contact your administrator.")
 
 def show_main_app():
     """Show main application after authentication"""
@@ -1201,14 +1176,18 @@ def show_main_app():
         with colf4:
             f_tag = st.text_input("Tag filter", value=st.session_state.get('tag_filter',''))
             st.session_state['tag_filter'] = f_tag
-        st.markdown("### CSV Import")
+        st.markdown("### CSV/Excel Import")
         if 'csv_import_done' not in st.session_state:
             st.session_state.csv_import_done = False
-        uploaded = st.file_uploader("Upload CSV of leads", type=["csv"], accept_multiple_files=False, key="leads_csv")
+        uploaded = st.file_uploader("Upload CSV/XLSX of leads", type=["csv","xlsx","xls"], accept_multiple_files=False, key="leads_csv")
         if uploaded is not None and not st.session_state.csv_import_done:
             try:
                 import pandas as pd
-                df = pd.read_csv(uploaded)
+                name_lower = (uploaded.name or "").lower()
+                if name_lower.endswith(('.xlsx','.xls')):
+                    df = pd.read_excel(uploaded)
+                else:
+                    df = pd.read_csv(uploaded)
                 required_cols = {"name"}
                 if not required_cols.issubset(set(c.lower() for c in df.columns)):
                     st.error("CSV must include at least a 'name' column.")
@@ -1221,10 +1200,12 @@ def show_main_app():
                         df['email'] = df['email'].astype(str).str.strip()
                         df = df[df['email'].str.contains(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', regex=True, na=False)]
                         df = df.drop_duplicates(subset=['email'])
+                    # Optional: user category/tag column
+                    user_category = st.text_input("Category/tag to assign to imported leads", value="imported")
                     inserted = 0
                     for _, row in df.iterrows():
                         try:
-                            add_lead(
+                            lid = add_lead(
                                 st.session_state.user['id'],
                                 name=str(row.get('name','')).strip(),
                                 email=str(row.get('email','')).strip() if 'email' in df.columns else None,
@@ -1237,6 +1218,13 @@ def show_main_app():
                                 website=str(row.get('website','')).strip() if 'website' in df.columns else None,
                                 source=str(row.get('source','csv')).strip() if 'source' in df.columns else 'csv'
                             )
+                            # Save tag/category
+                            try:
+                                prev = str(row.get('tags','')).strip() if 'tags' in df.columns else ''
+                                new_tags = (prev + ("," if prev and user_category else "") + user_category).strip(',') if user_category else prev
+                                update_lead_tags(int(lid), new_tags)
+                            except Exception:
+                                pass
                             inserted += 1
                         except Exception:
                             pass
@@ -1316,8 +1304,21 @@ def show_main_app():
             ai_variants = st.number_input("Variants", min_value=1, max_value=5, value=1, key="ai_variants")
         with c3:
             use_first_match = st.checkbox("Auto-apply first variant", value=False)
+        st.markdown("#### AI Subject Suggestions")
+        if st.button("Suggest Subjects"):
+            try:
+                lead_ctx = sample_lead
+                subs = ai_email_generator.generate_multiple_subjects(lead_ctx, campaign_type=ai_tone, count=5)
+                st.session_state.ai_subjects = subs
+                st.success(f"Got {len(subs)} suggestions")
+            except Exception as e:
+                st.error(f"Failed to suggest subjects: {e}")
+        if isinstance(st.session_state.get('ai_subjects'), list) and st.session_state.ai_subjects:
+            pick = st.selectbox("Pick a subject", st.session_state.ai_subjects)
+            if st.button("Use Subject"):
+                subject = pick
         # Pick a sample lead to personalize
-        sample_leads = get_filtered_leads(st.session_state.user['id'], limit=1)
+        sample_leads = get_leads(st.session_state.user['id'], limit=1)
         sample_lead = sample_leads[0] if sample_leads else { 'name': 'Friend', 'company': 'Your Company', 'title': 'Professional' }
         if st.button("Generate with AI"):
             try:
@@ -1388,20 +1389,28 @@ def show_main_app():
                 st.dataframe(pd.DataFrame([{'id': l['id'], 'name': l.get('name',''), 'email': l.get('email',''), 'company': l.get('company','') } for l in deduped][:min(100, len(deduped))]), use_container_width=True)
             except Exception:
                 st.write([{'id': l['id'], 'name': l.get('name',''), 'email': l.get('email','') } for l in deduped][:min(100, len(deduped))])
-        # Select sender account
+        # Simple schedule start time
+        sched_enable = st.checkbox("Schedule start time", value=False)
+        sched_datetime = st.datetime_input("Start at", value=datetime.now(), disabled=not sched_enable)
+        # Sender rotation
         accounts_for_send = list_email_accounts(st.session_state.user['id'])
-        # Use active sender from sidebar or default
         selected_sender_id = st.session_state.get('active_sender_id')
-        if not selected_sender_id and accounts_for_send:
-            default_acct = get_default_email_account(st.session_state.user['id'])
-            selected_sender_id = default_acct['id'] if default_acct else None
-        st.caption(f"Using sender: #{selected_sender_id}" if selected_sender_id else "Using single-config/default sender")
+        rotate_senders = st.checkbox("Rotate across multiple accounts", value=False)
+        st.caption(f"Using sender: #{selected_sender_id}" if (selected_sender_id and not rotate_senders) else ("Rotating across accounts" if rotate_senders else "Using single-config/default sender"))
         if st.button("Start Bulk Send"):
             from time import sleep
             prog = st.progress(0.0)
             done = 0
             total = min(int(safety_cap), len(deduped)) if safety_cap else len(deduped)
             sent = 0
+            # Optional: wait until schedule start
+            if sched_enable and sched_datetime:
+                try:
+                    while datetime.now() < sched_datetime:
+                        st.info(f"Waiting to start: {max(0,int((sched_datetime - datetime.now()).total_seconds()))}s")
+                        sleep(1)
+                except Exception:
+                    pass
             # Load safety controls
             safety_cfg = load_safety_config(st.session_state.user['id'])
             per_domain_counts = {}
@@ -1436,7 +1445,14 @@ def show_main_app():
                         pass
                     try:
                         # If account selected, temporarily override email config
-                        if selected_sender_id:
+                        if rotate_senders and accounts_for_send:
+                            # Round-robin
+                            try:
+                                idx = sent % len(accounts_for_send)
+                                acct = get_email_account(st.session_state.user['id'], int(accounts_for_send[idx]['id']))
+                            except Exception:
+                                acct = None
+                        elif selected_sender_id:
                             acct = get_email_account(st.session_state.user['id'], int(selected_sender_id))
                             if acct:
                                 # Temporarily set email config to account for send_email_simulation
@@ -1495,41 +1511,7 @@ def show_main_app():
                     sleep(0.05)
             st.success(f"Bulk process completed for {total} leads.")
             st.info(f"Sent: {sent}, Blocked: {skipped_blocked}, Domain-cap Skips: {skipped_domain_cap}, Missing email: {skipped_no_email}, Errors: {errors}")
-        st.markdown("### Drip Sequences")
-        seq_name = st.text_input("Sequence name")
-        seq_desc = st.text_input("Description")
-        if st.button("Create Sequence") and seq_name:
-            sid = create_sequence(st.session_state.user['id'], seq_name, seq_desc)
-            st.success(f"Sequence created with ID {sid}")
-        # Add steps
-        st.markdown("#### Add Step")
-        try:
-            # reload sequences
-            seqs = get_sequences(st.session_state.user['id'])
-        except Exception:
-            seqs = []
-        if seqs:
-            seq_options = {f"{s['name']} (#{s['id']})": s['id'] for s in seqs}
-            sel_seq_label = st.selectbox("Select sequence", list(seq_options.keys()))
-            sel_seq = seq_options[sel_seq_label]
-            step_order = st.number_input("Order", min_value=1, value=1)
-            delay_days = st.number_input("Delay days", min_value=0, value=0)
-            s_subject = st.text_input("Step subject")
-            s_content = st.text_area("Step content", height=120)
-            if st.button("Add Step") and s_subject and s_content:
-                add_sequence_step(sel_seq, int(step_order), int(delay_days), s_subject, s_content)
-                st.success("Step added.")
-            # Schedule sequence to a segment
-            st.markdown("#### Schedule Sequence to Segment")
-            start_date = st.date_input("Start date")
-            seg_name_query = st.text_input("Segment filter: name contains")
-            seg_tag = st.text_input("Segment filter: tag contains")
-            segment_leads = get_filtered_leads(st.session_state.user['id'], name_query=seg_name_query, tag_query=seg_tag, limit=500)
-            st.write(f"Segment size: {len(segment_leads)}")
-            if st.button("Schedule Sequence"):
-                lead_ids = [l['id'] for l in segment_leads]
-                schedule_sequence_for_leads(st.session_state.user['id'], sel_seq, lead_ids, datetime.now())
-                st.success("Sequence scheduled for selected segment.")
+        # Drip sequences removed for simplicity
         st.markdown("### Email Accounts (From addresses)")
         with st.expander("Manage Email Accounts"):
             colA, colB = st.columns(2)
@@ -1656,6 +1638,10 @@ def show_main_app():
             st.info("No lead data to display.")
     elif current_page == "Settings":
         st.markdown("## ⚙️ Settings")
+        st.markdown("### Interface Mode")
+        simple_mode_new = st.checkbox("Enable Simple Mode (beginner-friendly)", value=bool(st.session_state.get('simple_mode', True)))
+        st.session_state.simple_mode = simple_mode_new
+        st.caption("Simple mode shows only essential pages and a streamlined email send flow.")
         st.markdown("### Suppression List Editor")
         sup = load_suppression_list(st.session_state.user['id'])
         sup_text = "\n".join(sorted(sup)) if sup else ""
@@ -1759,9 +1745,23 @@ def show_main_app():
                 import pandas as pd
                 udf = pd.DataFrame(users)
                 st.dataframe(udf, use_container_width=True)
+                st.markdown("#### Create New User")
+                cu1, cu2 = st.columns(2)
+                with cu1:
+                    nu = st.text_input("Username")
+                    ne = st.text_input("Email")
+                with cu2:
+                    npw = st.text_input("Password", type="password")
+                    nr = st.selectbox("Role", ["user", "manager"], index=0)
+                if st.button("Create User") and nu and ne and npw:
+                    if register_user(nu, ne, npw, nr):
+                        st.success("User created.")
+                    else:
+                        st.error("Username or email already exists")
+                st.markdown("#### Promote/Demote User Role")
                 uid = st.number_input("User ID", min_value=1, step=1)
-                new_role = st.selectbox("New role", ["user", "manager", "admin"])
-                if st.button("Update Role"):
+                new_role = st.selectbox("Set role", ["user", "manager", "admin"])
+                if st.button("Apply Role"):
                     if update_user_role(int(uid), new_role):
                         st.success("Role updated.")
                     else:
@@ -1808,6 +1808,7 @@ def main():
     """Main application function"""
     # Initialize database
     init_database()
+    ensure_admin_exists()
     # Process due scheduled jobs opportunistically on each run
     try:
         process_scheduled_jobs(max_jobs=25)
