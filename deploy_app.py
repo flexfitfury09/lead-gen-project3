@@ -1478,9 +1478,12 @@ def show_main_app():
         with c1:
             ai_tone = st.selectbox("Tone", ["professional", "casual", "urgent"], index=0, key="ai_tone")
         with c2:
-            ai_variants = st.number_input("Variants", min_value=1, max_value=5, value=1, key="ai_variants")
+            ai_variants = st.number_input("Variants", min_value=1, max_value=5, value=1, key="ai_variants_count")
         with c3:
             use_first_match = st.checkbox("Auto-apply first variant", value=False)
+        # Pick a sample lead to personalize (define before using in buttons)
+        sample_leads = get_leads(st.session_state.user['id'], limit=1)
+        sample_lead = sample_leads[0] if sample_leads else { 'name': 'Friend', 'company': 'Your Company', 'title': 'Professional' }
         st.markdown("#### AI Subject Suggestions")
         if st.button("Suggest Subjects"):
             try:
@@ -1494,20 +1497,17 @@ def show_main_app():
             pick = st.selectbox("Pick a subject", st.session_state.ai_subjects)
             if st.button("Use Subject"):
                 subject = pick
-        # Pick a sample lead to personalize
-        sample_leads = get_leads(st.session_state.user['id'], limit=1)
-        sample_lead = sample_leads[0] if sample_leads else { 'name': 'Friend', 'company': 'Your Company', 'title': 'Professional' }
         if st.button("Generate with AI"):
             try:
                 variants = ai_email_generator.generate_email_variations(sample_lead, campaign_type=ai_tone, count=int(ai_variants))
-                st.session_state.ai_variants = variants
+                st.session_state.ai_generated_variants = variants
                 st.success(f"Generated {len(variants)} variant(s)")
                 if use_first_match and variants:
                     subject = variants[0]['subject']
                     content = variants[0]['body'].replace("\n", "<br>")
             except Exception as e:
                 st.error(f"AI generation failed: {e}")
-        variants_to_show = st.session_state.get('ai_variants') if isinstance(st.session_state.get('ai_variants'), list) else []
+        variants_to_show = st.session_state.get('ai_generated_variants') if isinstance(st.session_state.get('ai_generated_variants'), list) else []
         if variants_to_show:
             for i, v in enumerate(variants_to_show, start=1):
                 with st.expander(f"Variant {i}: {v.get('subject','')[:60]}"):
