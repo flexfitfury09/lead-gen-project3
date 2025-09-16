@@ -435,7 +435,7 @@ def update_user_role(user_id: int, role: str):
             cursor.execute("UPDATE users SET role = 'user' WHERE role = 'admin' AND id != ?", (user_id,))
             cursor.execute('UPDATE users SET role = ? WHERE id = ?', (role, user_id))
         else:
-        cursor.execute('UPDATE users SET role = ? WHERE id = ?', (role, user_id))
+            cursor.execute('UPDATE users SET role = ? WHERE id = ?', (role, user_id))
         conn.commit()
         return True
     except Exception:
@@ -1204,30 +1204,30 @@ def show_login_page():
                 <h2 style="text-align: center; margin-bottom: 2rem;">🔐 Login</h2>
             </div>
         """, unsafe_allow_html=True)
-            with st.form("login_form"):
+        with st.form("login_form"):
             username = st.text_input("Username or Email", placeholder="Enter your username or email")
-                password = st.text_input("Password", type="password", placeholder="Enter your password")
+            password = st.text_input("Password", type="password", placeholder="Enter your password")
             keep_signed_in = st.checkbox("Keep me signed in for 7 days", value=True)
-                submit = st.form_submit_button("Login", type="primary")
-                if submit:
+            submit = st.form_submit_button("Login", type="primary")
+            if submit:
                     if username and password:
                         user = authenticate_user(username, password)
                         if user:
                             st.session_state.authenticated = True
                             st.session_state.user = user
-                        try:
-                            sess = {
-                                'user': user,
-                                'expires': (datetime.now() + timedelta(days=7)).isoformat() if keep_signed_in else (datetime.now() + timedelta(hours=2)).isoformat()
-                            }
-                            with open('auth_session.json', 'w') as f:
-                                json.dump(sess, f)
-                        except Exception:
-                            pass
+                            try:
+                                sess = {
+                                    'user': user,
+                                    'expires': (datetime.now() + timedelta(days=7)).isoformat() if keep_signed_in else (datetime.now() + timedelta(hours=2)).isoformat()
+                                }
+                                with open('auth_session.json', 'w') as f:
+                                    json.dump(sess, f)
+                            except Exception:
+                                pass
                             st.success("Login successful!")
                             st.rerun()
                         else:
-                        st.error("Invalid credentials")
+                            st.error("Invalid credentials")
                     else:
                         st.error("Please fill in all fields")
 
@@ -1243,11 +1243,11 @@ def show_main_app():
                 key="page_selector"
             )
         else:
-        current_page = st.selectbox(
-            "Select Page",
-            ["Home", "Lead Management", "Email Campaigns", "Analytics", "Settings", "Admin"],
-            key="page_selector"
-        )
+            current_page = st.selectbox(
+                "Select Page",
+                ["Home", "Lead Management", "Email Campaigns", "Analytics", "Settings", "Admin"],
+                key="page_selector"
+            )
         
         st.markdown("---")
         
@@ -1284,8 +1284,8 @@ def show_main_app():
         
         st.markdown("---")
         if not st.session_state.simple_mode:
-        st.markdown("### ⏱️ Real-time Counters")
-        render_realtime_counters(st.session_state.user['id'], key="sidebar_realtime_refresh")
+            st.markdown("### ⏱️ Real-time Counters")
+            render_realtime_counters(st.session_state.user['id'], key="sidebar_realtime_refresh")
     
     # Logout button
     if st.button("🚪 Logout", use_container_width=True):
@@ -1337,7 +1337,7 @@ def show_main_app():
                 if name_lower.endswith(('.xlsx','.xls')):
                     df = pd.read_excel(uploaded)
                 else:
-                df = pd.read_csv(uploaded)
+                    df = pd.read_csv(uploaded)
                 required_cols = {"name"}
                 if not required_cols.issubset(set(c.lower() for c in df.columns)):
                     st.error("CSV must include at least a 'name' column.")
@@ -1695,7 +1695,7 @@ def show_main_app():
         if st.session_state.simple_mode:
             bulk = get_leads(st.session_state.user['id'], limit=1000)
         else:
-        filt_name = st.text_input("Filter name contains (bulk)")
+            filt_name = st.text_input("Filter name contains (bulk)")
             bulk = get_filtered_leads(st.session_state.user['id'], name_query=filt_name, limit=2000)
         # Category/Tag filter from imported tags
         try:
@@ -1873,16 +1873,16 @@ def show_main_app():
                                 # Note: send_email_simulation reads config via load_email_config; we simulate by writing a temp config
                                 save_email_config(st.session_state.user['id'], cfg)
                                 if not dry_run:
-                                send_email_simulation(email, subject, content, st.session_state.user['id'], from_email=acct['from_email'])
+                                    send_email_simulation(email, subject, content, st.session_state.user['id'], from_email=acct['from_email'])
                             else:
                                 if not dry_run:
-                                send_email_simulation(email, subject, content, st.session_state.user['id'])
+                                    send_email_simulation(email, subject, content, st.session_state.user['id'])
                         else:
                             if not dry_run:
-                            send_email_simulation(email, subject, content, st.session_state.user['id'])
+                                send_email_simulation(email, subject, content, st.session_state.user['id'])
                         # Track send
                         if not dry_run:
-                        _insert_email_tracking(0, l['id'], email, 'sent')
+                            _insert_email_tracking(0, l['id'], email, 'sent')
                         sent += 1
                         daily_sent += 1
                         try:
